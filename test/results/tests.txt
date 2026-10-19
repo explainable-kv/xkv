@@ -1,11 +1,11 @@
 # Every test, verbose
-# recorded 2026-10-19 11:17 UTC with go1.24.7 linux/amd64
+# recorded 2026-10-19 12:44 UTC with go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
 # command: go test -count=1 -v ./...
 
 === RUN   TestCompactionEquivalence
     compact_test.go:224: 20 random workloads of 1500 writes: 30021 revisions before compaction, 15299 after, 13659 of them kept only because a kept revision names them as a cause; Get, Why and the kept History matched before and after compaction, after reopening, and after a full rescan, and every older value (GetAt at sampled revisions, the previous value in each Why node) either matched or was reported as compacted, never wrong
---- PASS: TestCompactionEquivalence (7.79s)
+--- PASS: TestCompactionEquivalence (7.47s)
 === RUN   TestCompactKeepsOldCauses
 --- PASS: TestCompactKeepsOldCauses (0.01s)
 === RUN   TestCompactKeepSince
@@ -15,13 +15,13 @@
 === RUN   TestCompactKeepsLatestDelete
 --- PASS: TestCompactKeepsLatestDelete (0.01s)
 === RUN   TestConcurrentUse
-    compact_test.go:394: 2s of one writer, 25 compactions and 4 readers at once: no read failed; 12500 revisions written
---- PASS: TestConcurrentUse (2.04s)
+    compact_test.go:394: 2s of one writer, 22 compactions and 4 readers at once: no read failed; 11000 revisions written
+--- PASS: TestConcurrentUse (2.01s)
 === RUN   TestR3RandomNetwork
     exchange_review3_test.go:301: {conflicts:5739 cut:545 stale:710 reopen:1488 compact:785 dup:0 spurious:0 missed:0}
---- PASS: TestR3RandomNetwork (8.07s)
+--- PASS: TestR3RandomNetwork (8.40s)
 === RUN   TestR3ReopenEquivalence
---- PASS: TestR3ReopenEquivalence (2.18s)
+--- PASS: TestR3ReopenEquivalence (2.23s)
 === RUN   TestR3CompactionKeepsWrongNewest
 === RUN   TestR3CompactionKeepsWrongNewest/newest
 === RUN   TestR3CompactionKeepsWrongNewest/theirs
@@ -33,28 +33,28 @@
 === RUN   TestR3SeenClaimPoisons
 --- PASS: TestR3SeenClaimPoisons (0.01s)
 === RUN   TestR3BigSeenListsCost
-    exchange_review3_test.go:523: file 31 MB, import 1.382259225s: 200
-    exchange_review3_test.go:526: one local write after: 1.508116ms, file now 14800142 bytes
-    exchange_review3_test.go:531: reopen by scan: 93.055352ms
---- PASS: TestR3BigSeenListsCost (1.78s)
+    exchange_review3_test.go:523: file 31 MB, import 1.294602406s: 200
+    exchange_review3_test.go:526: one local write after: 1.492332ms, file now 14800142 bytes
+    exchange_review3_test.go:531: reopen by scan: 81.615332ms
+--- PASS: TestR3BigSeenListsCost (1.63s)
 === RUN   TestR3Concurrent
---- PASS: TestR3Concurrent (4.73s)
+--- PASS: TestR3Concurrent (4.51s)
 === RUN   TestR3SeenListOverflowsMaxRecord
     exchange_review3_test.go:642: put of a max value: rev 2 err <nil>
     exchange_review3_test.go:658: after reopen: len 16777216 err <nil>
---- PASS: TestR3SeenListOverflowsMaxRecord (0.18s)
+--- PASS: TestR3SeenListOverflowsMaxRecord (0.14s)
 === RUN   TestR3NewIDForgetsSharedLine
-    exchange_review3_test.go:684: newest: {Store:3854e839d1c6de68fb1fdb636a5cffa9 Since:0 Through:2 Imported:1 Context:0 Skipped:1 Agreed:0 Conflicts:[]}, k=copy-edit
-    exchange_review3_test.go:684: ours: {Store:f155da871bae51717de93f18c9f998c4 Since:0 Through:2 Imported:1 Context:0 Skipped:1 Agreed:0 Conflicts:[]}, k=copy-edit
+    exchange_review3_test.go:684: newest: {Store:380ef849a09e4e3604183168e5147347 Since:0 Through:2 Imported:1 Context:0 Skipped:1 Agreed:0 Conflicts:[]}, k=copy-edit
+    exchange_review3_test.go:684: ours: {Store:986ca8e9528cf86ccdede4016e2bda8b Since:0 Through:2 Imported:1 Context:0 Skipped:1 Agreed:0 Conflicts:[]}, k=copy-edit
 --- PASS: TestR3NewIDForgetsSharedLine (0.02s)
 === RUN   TestImportRefusesTooManyStoresForAKey
---- PASS: TestImportRefusesTooManyStoresForAKey (0.01s)
+--- PASS: TestImportRefusesTooManyStoresForAKey (0.02s)
 === RUN   TestR4NewIDAfterCompaction
 --- PASS: TestR4NewIDAfterCompaction (0.03s)
 === RUN   TestR4NewIDReopenEquivalence
 --- PASS: TestR4NewIDReopenEquivalence (0.02s)
 === RUN   TestR4RandomCopiesWithNewID
---- PASS: TestR4RandomCopiesWithNewID (9.44s)
+--- PASS: TestR4RandomCopiesWithNewID (9.07s)
 === RUN   TestCopiedStoreIsRefusedThenNewID
 --- PASS: TestCopiedStoreIsRefusedThenNewID (0.01s)
 === RUN   TestRestoredBackupIsRefused
@@ -70,7 +70,7 @@
 === RUN   TestEditAfterSettlingIsNoConflict/theirs/-1h0m0s
 === RUN   TestEditAfterSettlingIsNoConflict/theirs/1h0m0s
 --- PASS: TestEditAfterSettlingIsNoConflict (0.11s)
-    --- PASS: TestEditAfterSettlingIsNoConflict/newest/0s (0.02s)
+    --- PASS: TestEditAfterSettlingIsNoConflict/newest/0s (0.01s)
     --- PASS: TestEditAfterSettlingIsNoConflict/newest/-1h0m0s (0.01s)
     --- PASS: TestEditAfterSettlingIsNoConflict/newest/1h0m0s (0.01s)
     --- PASS: TestEditAfterSettlingIsNoConflict/ours/0s (0.01s)
@@ -82,18 +82,18 @@
 === RUN   TestReimportAfterCompactionChangesNothing
 --- PASS: TestReimportAfterCompactionChangesNothing (0.03s)
 === RUN   TestImportOfAFullTransaction
---- PASS: TestImportOfAFullTransaction (4.09s)
+--- PASS: TestImportOfAFullTransaction (6.38s)
 === RUN   TestImportWhileCompacting
---- PASS: TestImportWhileCompacting (0.12s)
+--- PASS: TestImportWhileCompacting (0.13s)
 === RUN   TestExchangeLinesMustBeCanonical
 --- PASS: TestExchangeLinesMustBeCanonical (0.01s)
 === RUN   TestImportScalesLinearly
-    exchange_review_test.go:331: one key false: 20,000 revisions in 122.749399ms, 80,000 in 693.232181ms
-    exchange_review_test.go:331: one key true: 20,000 revisions in 126.33877ms, 80,000 in 582.633598ms
---- PASS: TestImportScalesLinearly (2.50s)
+    exchange_review_test.go:331: one key false: 20,000 revisions in 147.472037ms, 80,000 in 770.860831ms
+    exchange_review_test.go:331: one key true: 20,000 revisions in 152.405884ms, 80,000 in 586.827173ms
+--- PASS: TestImportScalesLinearly (2.60s)
 === RUN   TestExchangeRingAndStar
     exchange_review_test.go:425: 90 runs of 3 or 4 stores in a ring, a star and a mesh: 7185 conflicts settled, every run ended with the same values everywhere, and an edit after settling reached every store without a conflict
---- PASS: TestExchangeRingAndStar (3.79s)
+--- PASS: TestExchangeRingAndStar (4.08s)
 === RUN   TestRelayedChangeKeepsItsWritersView
 --- PASS: TestRelayedChangeKeepsItsWritersView (0.02s)
 === RUN   TestWriteTimeNeverGoesBack
@@ -102,7 +102,7 @@
 --- PASS: TestExchangeRoundTrip (0.01s)
 === RUN   TestExchangeIncremental
     exchange_test.go:200: 12 rounds of 25 random writes with causes, each round exported since the last one and imported: after every round the importing store gave the same values and the same Why trees for every key
---- PASS: TestExchangeIncremental (0.14s)
+--- PASS: TestExchangeIncremental (0.12s)
 === RUN   TestExchangeContextIsHistory
 --- PASS: TestExchangeContextIsHistory (0.01s)
 === RUN   TestExchangeConflicts
@@ -111,19 +111,19 @@
 === RUN   TestExchangeConflicts/theirs
 --- PASS: TestExchangeConflicts (0.03s)
     --- PASS: TestExchangeConflicts/newest (0.01s)
-    --- PASS: TestExchangeConflicts/ours (0.01s)
+    --- PASS: TestExchangeConflicts/ours (0.02s)
     --- PASS: TestExchangeConflicts/theirs (0.01s)
 === RUN   TestExchangeAgreedChange
 --- PASS: TestExchangeAgreedChange (0.01s)
 === RUN   TestExchangeRefusesBadFiles
---- PASS: TestExchangeRefusesBadFiles (0.05s)
+--- PASS: TestExchangeRefusesBadFiles (0.07s)
 === RUN   TestExchangeThreeStores
---- PASS: TestExchangeThreeStores (0.01s)
+--- PASS: TestExchangeThreeStores (0.02s)
 === RUN   TestExchangeAfterCompaction
---- PASS: TestExchangeAfterCompaction (0.01s)
+--- PASS: TestExchangeAfterCompaction (0.02s)
 === RUN   TestExchangeTwoWayConverges
     exchange_test.go:585: 20 seeds of two stores writing, exchanging both ways at random and compacting now and then: 2045 revisions written, 749 conflicts settled, 174 changes both sides had made alike; every seed settled to the same values on both stores, both files passed the check, and in the seeds without compaction each store held every revision the other held; then 100 edits made after settling each reached the other store as an ordinary change, with no conflict
---- PASS: TestExchangeTwoWayConverges (1.19s)
+--- PASS: TestExchangeTwoWayConverges (1.38s)
 === RUN   TestExportNeedsNoWritesFromFormat2ReadOnly
 --- PASS: TestExportNeedsNoWritesFromFormat2ReadOnly (0.01s)
 === RUN   TestParseIdent
@@ -132,10 +132,10 @@
 --- PASS: TestFormat1Store (0.01s)
 === RUN   TestImportMutatedFiles
     exchange_test.go:793: 3000 exports with one to four bytes changed, dropped or added: 2997 refused whole as invalid, 3 accepted; none panicked, and every accepted one left a file that checks out
---- PASS: TestImportMutatedFiles (5.97s)
+--- PASS: TestImportMutatedFiles (6.10s)
 === RUN   TestTornTail
     failure_test.go:99: last transaction of 397 bytes: cut at each of its 397 byte positions and damaged at each of its 397 bytes; every open trimmed back to the 5 committed revisions, Get and Why answered as before, and the next write continued the numbering
---- PASS: TestTornTail (2.82s)
+--- PASS: TestTornTail (3.18s)
 === RUN   TestDamageInTheMiddleIsReported
 --- PASS: TestDamageInTheMiddleIsReported (0.01s)
 === RUN   TestDamageUnderTheSnapshot
@@ -143,28 +143,31 @@
 === RUN   TestNotAnXKVFile
 --- PASS: TestNotAnXKVFile (0.00s)
 === RUN   TestHelperProcess
-    process_test.go:39: only runs as a child process
+    process_test.go:41: only runs as a child process
 --- SKIP: TestHelperProcess (0.00s)
 === RUN   TestCrashSIGKILL
-    process_test.go:231: 200 SIGKILLs at random moments in 33.813s: 19221 transactions acknowledged, 0 lost, 0 half-visible; 117 more were on disk but killed before the writer could report them; 0 kills left a torn tail (0 bytes); the file ends with 57775 revisions in 19338 transactions and every cause resolves
---- PASS: TestCrashSIGKILL (33.83s)
+    process_test.go:233: 200 SIGKILLs at random moments in 32.606s: 18481 transactions acknowledged, 0 lost, 0 half-visible; 119 more were on disk but killed before the writer could report them; 2 kills left a torn tail (1098 bytes); the file ends with 55895 revisions in 18600 transactions and every cause resolves
+--- PASS: TestCrashSIGKILL (32.62s)
 === RUN   TestKillDuringCompaction
-    process_test.go:306: 40 kills during compaction of 20001 revisions (a full compaction takes 31ms): 23 landed before the rename, 17 after; every time Get and full-depth Why on 20 sampled keys matched the store before compaction and the check passed
---- PASS: TestKillDuringCompaction (21.86s)
+    process_test.go:308: 40 kills during compaction of 20001 revisions (a full compaction takes 27ms): 29 landed before the rename, 11 after; every time Get and full-depth Why on 20 sampled keys matched the store before compaction and the check passed
+--- PASS: TestKillDuringCompaction (23.19s)
 === RUN   TestTwoProcesses
 --- PASS: TestTwoProcesses (0.01s)
 === RUN   TestKillDuringImport
-    process_test.go:482: 40 kills of a process importing 285 revisions in 300 transactions (a clean import takes 62ms and settles 339 conflicts): 20 landed part-way, and every time the file checked out and importing again ended with the values of a clean import and no revision imported twice
---- PASS: TestKillDuringImport (3.46s)
+    process_test.go:484: 40 kills of a process importing 285 revisions in 300 transactions (a clean import takes 50ms and settles 339 conflicts): 23 landed part-way, and every time the file checked out and importing again ended with the values of a clean import and no revision imported twice
+--- PASS: TestKillDuringImport (3.17s)
+=== RUN   TestWatchFollowsKilledWriters
+    process_test.go:607: 20 writer processes killed with SIGKILL while a read-only handle in another process watched the file: 3996 acknowledged transactions, all delivered whole and in order, 12101 revisions in all, none that the file doesn't hold
+--- PASS: TestWatchFollowsKilledWriters (1.16s)
 === RUN   TestOpenRacingCompaction
---- PASS: TestOpenRacingCompaction (0.02s)
+--- PASS: TestOpenRacingCompaction (0.01s)
 === RUN   TestSnapshotBesideARestoredFile
 --- PASS: TestSnapshotBesideARestoredFile (0.01s)
 === RUN   TestLargeTornTailOpensFast
-    review_test.go:115: an 8 MiB torn tail was trimmed in 81ms, its bytes kept in /tmp/TestLargeTornTailOpensFast3323713873/001/test.xkv.trimmed-20261019T111924.144208941Z
---- PASS: TestLargeTornTailOpensFast (0.25s)
+    review_test.go:115: an 8 MiB torn tail was trimmed in 67ms, its bytes kept in /tmp/TestLargeTornTailOpensFast2674811816/001/test.xkv.trimmed-20261019T124624.871175274Z
+--- PASS: TestLargeTornTailOpensFast (0.21s)
 === RUN   TestCraftedTornTailIsBounded
---- PASS: TestCraftedTornTailIsBounded (0.27s)
+--- PASS: TestCraftedTornTailIsBounded (0.25s)
 === RUN   TestShortForeignFileIsLeftAlone
 --- PASS: TestShortForeignFileIsLeftAlone (0.01s)
 === RUN   TestFailedSyncStopsWrites
@@ -182,14 +185,58 @@
 === RUN   TestTornWriteOfAStoreFileValue
 --- PASS: TestTornWriteOfAStoreFileValue (0.01s)
 === RUN   TestLongHistory
-    scale_test.go:113: 100000 revisions over 10000 keys in 1000 transactions (100 writes each, fsync per transaction): written in 588ms (170025 revisions/s), file 12.4 MB
-    scale_test.go:115: Get: 1.52µs on average; History of 20: 17.382µs; Why to depth 16 on the deep chain (49 nodes): 140.496µs; Why to depth 256: 2.756861ms
-    scale_test.go:117: open with the index snapshot: 31ms; open with a full scan: 101ms; the open store's index takes 9 MB of memory, 90 bytes per revision
-    scale_test.go:119: compaction keeping each key's latest: 114ms, 100000 revisions -> 16597 (6597 kept for causes), 12.4 MB -> 2.1 MB
---- PASS: TestLongHistory (1.14s)
+    scale_test.go:113: 100000 revisions over 10000 keys in 1000 transactions (100 writes each, fsync per transaction): written in 504ms (198474 revisions/s), file 12.4 MB
+    scale_test.go:115: Get: 1.749µs on average; History of 20: 17.73µs; Why to depth 16 on the deep chain (49 nodes): 176.757µs; Why to depth 256: 2.498667ms
+    scale_test.go:117: open with the index snapshot: 25ms; open with a full scan: 94ms; the open store's index takes 9 MB of memory, 90 bytes per revision
+    scale_test.go:119: compaction keeping each key's latest: 135ms, 100000 revisions -> 16597 (6597 kept for causes), 12.4 MB -> 2.1 MB
+--- PASS: TestLongHistory (1.06s)
 === RUN   TestExchangeScale
-    scale_test.go:275: exchange of 100000 revisions in 1000 transactions (binary values, half with a cause): export 536ms into a 24.8 MB file; import 1.792s with an fsync per transaction; importing the same file again 857ms, all skipped
---- PASS: TestExchangeScale (3.48s)
+    scale_test.go:275: exchange of 100000 revisions in 1000 transactions (binary values, half with a cause): export 459ms into a 24.8 MB file; import 1.374s with an fsync per transaction; importing the same file again 792ms, all skipped
+--- PASS: TestExchangeScale (2.90s)
+=== RUN   TestReview2RestoredBackupSameStore
+    watch_review2_test.go:38: watch ended: xkv: the file now holds a different store: /tmp/TestReview2RestoredBackupSameStore180054489/001/test.xkv no longer holds revision 10 of "k": another store, or an older copy of this one, is at that path
+--- PASS: TestReview2RestoredBackupSameStore (0.21s)
+=== RUN   TestReview2Format1Recreated
+    watch_review2_test.go:66: watch ended: xkv: the file now holds a different store: /tmp/TestReview2Format1Recreated2241929395/001/test.xkv no longer holds revision 1 of "chargeback:cb_991": another store, or an older copy of this one, is at that path
+--- PASS: TestReview2Format1Recreated (0.21s)
+=== RUN   TestReviewCancelMidBatch
+    watch_review_test.go:31: err=context canceled calls after cancel=0
+--- PASS: TestReviewCancelMidBatch (0.01s)
+=== RUN   TestReviewFollowFromEmptyFile
+--- PASS: TestReviewFollowFromEmptyFile (0.01s)
+=== RUN   TestReviewFollowReplacedStore
+    watch_review_test.go:89: Refresh: xkv: the file now holds a different store: /tmp/TestReviewFollowReplacedStore2682537292/001/test.xkv now holds store 7f97f097035824328a607e726b6d0081, not 82b8a1e3017ab87bfa6eb766fcaffcdd
+    watch_review_test.go:93: watch ended: xkv: the file now holds a different store: /tmp/TestReviewFollowReplacedStore2682537292/001/test.xkv now holds store 7f97f097035824328a607e726b6d0081, not 82b8a1e3017ab87bfa6eb766fcaffcdd
+--- PASS: TestReviewFollowReplacedStore (0.21s)
+=== RUN   TestReviewPrefixWatcherToldOfAnyGap
+--- PASS: TestReviewPrefixWatcherToldOfAnyGap (0.01s)
+=== RUN   TestReviewStress
+    watch_review_test.go:196: writer: 1493 revisions, err stop
+    watch_review_test.go:196: follower: 1493 revisions, err stop
+    watch_review_test.go:217: prefix watcher: 1492 revisions err context deadline exceeded
+--- PASS: TestReviewStress (8.02s)
+=== RUN   TestReviewFnRefreshCompact
+--- PASS: TestReviewFnRefreshCompact (0.01s)
+=== RUN   TestReviewTornTailWithEmbeddedTx
+    watch_review_test.go:300: Refresh during a write in progress: xkv: file is damaged at offset 108: a damaged record is followed by whole transactions
+--- PASS: TestReviewTornTailWithEmbeddedTx (0.03s)
+=== RUN   TestReviewImportWakes
+--- PASS: TestReviewImportWakes (0.02s)
+=== RUN   TestWatchCatchUpThenLive
+--- PASS: TestWatchCatchUpThenLive (0.01s)
+=== RUN   TestWatchConcurrentWriters
+    watch_test.go:137: 4 writers, 150 transactions each: 1201 revisions delivered once each, in order, every transaction whole
+--- PASS: TestWatchConcurrentWriters (0.02s)
+=== RUN   TestWatchPrefix
+--- PASS: TestWatchPrefix (0.01s)
+=== RUN   TestWatchCompacted
+--- PASS: TestWatchCompacted (0.13s)
+=== RUN   TestWatchEnds
+--- PASS: TestWatchEnds (0.02s)
+=== RUN   TestWatchFnWrites
+--- PASS: TestWatchFnWrites (0.01s)
+=== RUN   TestWatchFollowsTheFile
+--- PASS: TestWatchFollowsTheFile (0.02s)
 === RUN   TestPutGetReopen
 --- PASS: TestPutGetReopen (0.01s)
 === RUN   TestStrictAndRelaxed
@@ -211,9 +258,9 @@
 === RUN   TestClosed
 --- PASS: TestClosed (0.00s)
 === RUN   TestLimits
---- PASS: TestLimits (0.10s)
+--- PASS: TestLimits (0.11s)
 === RUN   TestSnapshotIsCheckedAgainstTheFile
---- PASS: TestSnapshotIsCheckedAgainstTheFile (0.01s)
+--- PASS: TestSnapshotIsCheckedAgainstTheFile (0.02s)
 === RUN   TestCheck
 --- PASS: TestCheck (0.01s)
 === RUN   TestMemoryStore
@@ -261,7 +308,7 @@
     --- PASS: FuzzDecode/seed#1 (0.00s)
     --- PASS: FuzzDecode/dcb6e12d06017c73 (0.00s)
 PASS
-ok  	github.com/explainable-kv/xkv	122.007s
+ok  	github.com/explainable-kv/xkv	133.890s
 === RUN   TestCommandLine
 --- PASS: TestCommandLine (0.04s)
 === RUN   TestParseCause
@@ -273,24 +320,35 @@ ok  	github.com/explainable-kv/xkv	122.007s
 === RUN   TestExchangeCommands
 --- PASS: TestExchangeCommands (0.04s)
 === RUN   TestHTTPExchange
---- PASS: TestHTTPExchange (0.01s)
+--- PASS: TestHTTPExchange (0.02s)
 === RUN   TestNewIDAndUpgradeEndpoints
 --- PASS: TestNewIDAndUpgradeEndpoints (0.03s)
+=== RUN   TestWatchCommand
+--- PASS: TestWatchCommand (0.31s)
+=== RUN   TestHTTPWatch
+--- PASS: TestHTTPWatch (0.07s)
+=== RUN   TestReview2SSENoIDBeforeFirstEvent
+    watch_review2_test.go:38: stream opens with ["retry: 3000" "id: 0"]
+--- PASS: TestReview2SSENoIDBeforeFirstEvent (0.00s)
+=== RUN   TestReviewSSELastEventID
+--- PASS: TestReviewSSELastEventID (0.01s)
+=== RUN   TestReviewWatchDisconnectLeak
+--- PASS: TestReviewWatchDisconnectLeak (0.51s)
 PASS
-ok  	github.com/explainable-kv/xkv/cmd/xkv	0.159s
+ok  	github.com/explainable-kv/xkv/cmd/xkv	1.074s
 === RUN   TestExample
 --- PASS: TestExample (0.01s)
 PASS
-ok  	github.com/explainable-kv/xkv/examples/account-limit	0.036s
+ok  	github.com/explainable-kv/xkv/examples/account-limit	0.014s
 === RUN   TestExample
 --- PASS: TestExample (0.01s)
 PASS
-ok  	github.com/explainable-kv/xkv/examples/agent-setting	0.009s
+ok  	github.com/explainable-kv/xkv/examples/agent-setting	0.008s
 === RUN   TestExample
 --- PASS: TestExample (0.01s)
 PASS
 ok  	github.com/explainable-kv/xkv/examples/incident-timeout	0.007s
 === RUN   TestExample
---- PASS: TestExample (0.01s)
+--- PASS: TestExample (0.00s)
 PASS
-ok  	github.com/explainable-kv/xkv/examples/price-list	0.008s
+ok  	github.com/explainable-kv/xkv/examples/price-list	0.007s

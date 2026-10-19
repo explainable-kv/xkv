@@ -1,5 +1,5 @@
 # Benchmarks, three runs each. BenchmarkPut and BenchmarkTx100 fsync every transaction
-# recorded 2026-10-19 11:39 UTC with go1.24.7 linux/amd64
+# recorded 2026-10-19 13:07 UTC with go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
 # command: go test -run ^$ -bench . -benchtime 2s -count 3 .
 
@@ -7,23 +7,23 @@ goos: linux
 goarch: amd64
 pkg: github.com/explainable-kv/xkv
 cpu: Intel(R) Xeon(R) Processor
-BenchmarkPut-2            	   14618	    162601 ns/op
-BenchmarkPut-2            	   14478	    154968 ns/op
-BenchmarkPut-2            	   14562	    159777 ns/op
-BenchmarkPutNoSync-2      	 1000000	      2593 ns/op
-BenchmarkPutNoSync-2      	 1000000	      2307 ns/op
-BenchmarkPutNoSync-2      	 1000000	      2116 ns/op
-BenchmarkPutWithCause-2   	  978841	      3121 ns/op
-BenchmarkPutWithCause-2   	 1000000	      2758 ns/op
-BenchmarkPutWithCause-2   	 1000000	      2722 ns/op
-BenchmarkTx100-2          	    5260	    428657 ns/op
-BenchmarkTx100-2          	    7123	    388243 ns/op
-BenchmarkTx100-2          	    6202	    379562 ns/op
-BenchmarkGet-2            	 3278240	       738.1 ns/op
-BenchmarkGet-2            	 3277766	       738.4 ns/op
-BenchmarkGet-2            	 3285373	       766.1 ns/op
-BenchmarkWhy-2            	   95444	     24385 ns/op
-BenchmarkWhy-2            	  103070	     23769 ns/op
-BenchmarkWhy-2            	  101152	     24095 ns/op
+BenchmarkPut-2            	   16533	    159795 ns/op
+BenchmarkPut-2            	   14277	    154835 ns/op
+BenchmarkPut-2            	   14652	    159152 ns/op
+BenchmarkPutNoSync-2      	  943282	      2711 ns/op
+BenchmarkPutNoSync-2      	 1000000	      2464 ns/op
+BenchmarkPutNoSync-2      	 1000000	      2336 ns/op
+BenchmarkPutWithCause-2   	  809290	      3336 ns/op
+BenchmarkPutWithCause-2   	  816744	      3015 ns/op
+BenchmarkPutWithCause-2   	  839258	      3087 ns/op
+BenchmarkTx100-2          	    6358	    432796 ns/op
+BenchmarkTx100-2          	    7279	    373351 ns/op
+BenchmarkTx100-2          	    6614	    377525 ns/op
+BenchmarkGet-2            	 2693791	       772.9 ns/op
+BenchmarkGet-2            	 3042990	       720.6 ns/op
+BenchmarkGet-2            	 3377382	       718.4 ns/op
+BenchmarkWhy-2            	   99884	     26285 ns/op
+BenchmarkWhy-2            	   83270	     25166 ns/op
+BenchmarkWhy-2            	   90505	     26241 ns/op
 PASS
-ok  	github.com/explainable-kv/xkv	58.871s
+ok  	github.com/explainable-kv/xkv	58.281s

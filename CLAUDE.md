@@ -7,23 +7,21 @@ and the site; the owner does not.
 
 ## Where the next session starts
 
-v0.1.0 was the first release: the store, the xkv command with its HTTP mode,
-the WebAssembly build for the site demo, and four case-study examples.
+Releases so far, each with tests aimed at its promises, independent
+reviews, a fresh recording, a site post and a softdevstudio.com note:
 
-The plan the owner approved on Oct 19 2026 ("do both"):
+- v0.1.0: the store, the xkv command with its HTTP mode, the WebAssembly
+  build for the site demo, and four case-study examples.
+- v0.2.0 Exchange: export and import changes with their reasons and causes;
+  seen lists tell updates from conflicts; the loser stays in history; file
+  format 2. See docs/exchange.md.
+- v0.3.0 Watch: a stream of new revisions (`Watch`, `xkv watch`,
+  `GET /v1/watch`), read-only handles following another process, and the
+  demo's "Changes as they happen" panel.
 
-1. v0.2.0 Exchange: export the changes since a revision as an exchange file
-   that carries reasons, actors, refs, times and causes; import them into
-   another store, with conflicts kept: the winner is the value, the loser
-   stays in the key's history. Needs file format 2 (a store id in the
-   header, an origin and a seen list on revisions, history-only revisions). See docs/exchange.md.
-2. v0.3.0 Watch: a stream of new revisions (`Watch` in Go, `xkv watch`, a
-   streaming HTTP endpoint), with a correct answer when the starting
-   revision was compacted away; the site demo shows changes arriving.
-
-Each ships like 0.1.0: tests aimed at its promises, an independent review,
-a fresh recording, the automated release, a site post and a note on
-softdevstudio.com. Nothing is planned after 0.3.0 until the owner decides.
+The plan the owner approved on Oct 19 2026 ("do both") is done. Nothing is
+planned next until the owner decides; the plan goes here only after he
+approves it.
 
 ## Rules
 

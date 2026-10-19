@@ -415,7 +415,7 @@ The numbers here come from [test/results](test/results), written by
   trimmed back to the committed revisions, answered `Get` and `Why` as before,
   and the next write carried on the numbering.
 - **SIGKILL.** A writing process was killed at random moments
-  1000 times on the same file. 45,484 transactions were
+  1000 times on the same file. 44,372 transactions were
   acknowledged and none was lost; none was ever half visible; every cause in
   the file still resolved.
 - **Damage.** A flipped byte in the middle of the file is refused, not
@@ -457,7 +457,7 @@ The numbers here come from [test/results](test/results), written by
   source after every round.
 - **Killed during an import.** 40 kills landed at random points of
   an import of 285 revisions with 339 conflicts;
-  20 of them part-way. Every time the file checked out, and
+  23 of them part-way. Every time the file checked out, and
   importing again ended with the values of a clean import and nothing
   imported twice.
 - **Bad exchange files.** An export cut at every byte, and 3,000
@@ -465,16 +465,16 @@ The numbers here come from [test/results](test/results), written by
   nothing written, except 3 whose change still left a valid file; those
   imported and left a store that checks out. A fuzzer rewrote exchange files and sealed them
   with a correct checksum, so its changes reached the checks behind it,
-  3,592,585 times: none panicked, and every accepted file left a sound
+  2,652,195 times: none panicked, and every accepted file left a sound
   store.
-- **Watch under load.** {{W_WRITERS}} goroutines wrote {{W_TXS}} transactions
-  each while a watcher took them in: every one of the {{W_REVS}} revisions
+- **Watch under load.** 4 goroutines wrote 150 transactions
+  each while a watcher took them in: every one of the 1,201 revisions
   arrived once, in order, and no transaction arrived in pieces. A stress run
   added compaction in a loop, a prefix watcher and a read-only handle
   following the file from outside, polling every millisecond; each watcher
   got every revision it should, in order, through every compaction.
-- **Watching a killed writer.** {{WK_RUNS}} writer processes were killed with
-  SIGKILL while another process watched the file: all {{WK_TXS}}
+- **Watching a killed writer.** 20 writer processes were killed with
+  SIGKILL while another process watched the file: all 3,996
   acknowledged transactions arrived whole and in order, and nothing the
   file doesn't hold.
 - **Format 1 stores.** A file written by xkv 0.1 opens, answers as before,
@@ -483,19 +483,19 @@ The numbers here come from [test/results](test/results), written by
 - **Fuzzing.** Arbitrary bytes as a store file, as records, and as an
   exchange file never panic.
 - **A million revisions.** One million revisions over ten thousand keys were
-  written in 6.5 s with an fsync per 100-write transaction, into a 124 MB
-  file. `Get` took 1.5 µs and `Why` 16 levels deep 121 µs. The file opened in
-  194 ms with the index snapshot and 988 ms with a full scan. The index took
-  76 bytes per revision. Compacting to each key's latest took 935 ms and
+  written in 5.1 s with an fsync per 100-write transaction, into a 124 MB
+  file. `Get` took 1.4 µs and `Why` 16 levels deep 88 µs. The file opened in
+  197 ms with the index snapshot and 786 ms with a full scan. The index took
+  76 bytes per revision. Compacting to each key's latest took 861 ms and
   left 5.2 MB, keeping 33,338 older revisions because kept ones name them as
   causes.
 - **Exchange at scale.** 100,000 revisions in 1,000 transactions exported in
-  536 ms into a 24.8 MB file and imported in 1.8 s with an fsync per
-  transaction; importing the same file again skipped them all in 857 ms.
+  459 ms into a 24.8 MB file and imported in 1.4 s with an fsync per
+  transaction; importing the same file again skipped them all in 792 ms.
 
 Benchmarks on the same machine: a write with its fsync takes
-159 µs; without the fsync 2.3 µs; `Get` 0.74 µs;
-`Why` through a 16-revision chain 24 µs.
+159 µs; without the fsync 2.5 µs; `Get` 0.72 µs;
+`Why` through a 16-revision chain 26 µs.
 
 ## Build it yourself
 

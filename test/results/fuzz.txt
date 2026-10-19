@@ -1,14 +1,14 @@
 # The fuzzers, two minutes each
-# recorded 2026-10-19 11:33 UTC with go1.24.7 linux/amd64
+# recorded 2026-10-19 13:01 UTC with go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
 # command: go test -run ^$ -fuzz FuzzOpen -fuzztime 2m . ; go test -run ^$ -fuzz FuzzDecode -fuzztime 2m . ; go test -run ^$ -fuzz FuzzImport -fuzztime 2m .
 
-fuzz: elapsed: 2m1s, execs: 5624 (0/sec), new interesting: 4 (total: 27)
+fuzz: elapsed: 2m1s, execs: 38553 (0/sec), new interesting: 3 (total: 30)
 PASS
-ok  	github.com/explainable-kv/xkv	121.035s
-fuzz: elapsed: 2m1s, execs: 5336519 (0/sec), new interesting: 17 (total: 114)
+ok  	github.com/explainable-kv/xkv	121.025s
+fuzz: elapsed: 2m0s, execs: 5417369 (0/sec), new interesting: 3 (total: 117)
 PASS
-ok  	github.com/explainable-kv/xkv	121.039s
-fuzz: elapsed: 2m1s, execs: 3592585 (0/sec), new interesting: 88 (total: 269)
+ok  	github.com/explainable-kv/xkv	120.104s
+fuzz: elapsed: 2m1s, execs: 2652195 (0/sec), new interesting: 25 (total: 294)
 PASS
-ok  	github.com/explainable-kv/xkv	121.040s
+ok  	github.com/explainable-kv/xkv	121.123s
