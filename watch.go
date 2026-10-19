@@ -164,6 +164,9 @@ func (db *DB) Refresh() error {
 	if !db.opts.ReadOnly || db.path == "" {
 		return nil
 	}
+	// An Export reading through this handle needs the file to stay put.
+	db.xmu.Lock()
+	defer db.xmu.Unlock()
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.closed {
@@ -192,7 +195,7 @@ func (db *DB) Refresh() error {
 		}
 		db.st.Close()
 		db.file, db.st, db.hdr = n.file, n.st, n.hdr
-		db.revs, db.keys, db.origins = n.revs, n.keys, n.origins
+		db.revs, db.keys, db.origins, db.hist = n.revs, n.keys, n.origins, n.hist
 		db.end, db.lastRev, db.lastTx = n.end, max(db.lastRev, n.lastRev), max(db.lastTx, n.lastTx)
 		db.changed()
 		return nil
