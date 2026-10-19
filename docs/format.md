@@ -53,7 +53,7 @@ Every record sits in a frame:
 
 | Size | Field |
 |---|---|
-| 4 | body length *n*, from 1 to 16,826,513 (the largest record the limits allow) |
+| 4 | body length *n*, from 1 to 16,831,968 (the largest record the limits allow) |
 | 4 | CRC-32C of the body |
 | *n* | body |
 
@@ -67,7 +67,7 @@ commit.
 | type | byte `1` |
 | rev | uvarint, 1 or more, strictly increasing through the file |
 | tx | uvarint, the transaction id, 1 or more |
-| flags | byte: bit 0, this revision deletes the key; bit 1, it was imported and its origin follows the causes; bit 2, it is history only (see below); other bits zero |
+| flags | byte: bit 0, this revision deletes the key; bit 1, it was imported and its origin follows the causes; bit 2, it is history only (see below); bit 3, an import wrote it to settle a conflict; other bits zero |
 | time | varint, nanoseconds since 1970-01-01 UTC |
 | key | string, 1 to 4096 bytes |
 | value | uvarint length + bytes, up to 16 MiB; empty for a delete |
@@ -78,7 +78,7 @@ commit.
 | causes | for each: key (string) then rev (uvarint) |
 | origin | only with flag bit 1: the store id it was first written to (16 bytes), then its revision number there (uvarint, 1 or more) |
 
-Bits 1 and 2 appear only in version 2 files. An imported revision keeps its
+Bits 1, 2 and 3 appear only in version 2 files. An imported revision keeps its
 origin through every later exchange, so the pair (store id, revision) names
 it in every store that holds it. A revision written to this store has no
 origin field; its identity is this file's store id and its own number.
@@ -173,7 +173,7 @@ long with the same modification time, and the commit frame at the stated
 offset still carries the stated checksum. Otherwise (writes after it, a
 crash, a file restored from a backup) Open ignores it and reads the whole
 file. Every record read through the index is checked against it too: rev,
-tx, key and delete flag must match. Deleting the snapshot is always safe.
+tx, key, delete and history flags, and origin must match. Deleting the snapshot is always safe.
 
 ## Compaction work file: `<file>.compact`
 
@@ -198,6 +198,12 @@ Compaction keeps:
    *KeepSince*,
 3. every revision reachable from those through causes, at any depth.
 
-History revisions belong to no key's list, so only rule 3 keeps them.
+4. for every key, the newest revision from each store it has revisions
+   from, history included. Exchange compares against these (see
+   [exchange.md](exchange.md)); for a store that never exchanged, this is
+   just the latest.
+
+History revisions belong to no key's list, so only rules 3 and 4 keep
+them.
 
 Revision numbers and transaction ids are never reused.

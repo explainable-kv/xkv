@@ -25,6 +25,7 @@ type writeOpts struct {
 	actor     string
 	ref       string
 	causes    []causeSpec
+	resolve   bool // the write settles an import conflict
 }
 
 // Reason records why the write was made. In strict mode (the default) every
@@ -65,6 +66,7 @@ type Tx struct {
 	latest   map[string]*rec // this transaction's newest revision per key
 	byRev    map[uint64]*rec
 	now      int64
+	limit    int // bytes the transaction may hold: MaxTxSize, more for an import
 	finished bool
 }
 
@@ -159,13 +161,14 @@ func (tx *Tx) write(key string, value []byte, deleted bool, opts []WriteOption) 
 	r := &rec{
 		rev: tx.nextRev, tx: tx.txid, deleted: deleted, time: tx.now,
 		key: key, actor: actor, reason: reason, ref: o.ref, causes: causes,
+		resolution: o.resolve,
 	}
 	if !deleted {
 		r.value = append([]byte{}, value...)
 	}
 	f := frame(encodeRev(r))
-	if tx.size+len(f) > MaxTxSize {
-		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, MaxTxSize)
+	if tx.size+len(f) > tx.limit {
+		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, tx.limit)
 	}
 	tx.nextRev++
 	tx.recs = append(tx.recs, r)
@@ -212,8 +215,8 @@ func (tx *Tx) importRev(r *rec) (Revision, error) {
 		r.value = nil
 	}
 	f := frame(encodeRev(r))
-	if tx.size+len(f) > MaxTxSize {
-		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, MaxTxSize)
+	if tx.size+len(f) > tx.limit {
+		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, tx.limit)
 	}
 	tx.nextRev++
 	tx.recs = append(tx.recs, r)
@@ -336,7 +339,7 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 	tx := &Tx{
 		db: db, ctx: ctx, txid: lastTx + 1, nextRev: last + 1,
 		latest: map[string]*rec{}, byRev: map[uint64]*rec{},
-		now: db.opts.Now().UnixNano(),
+		now: db.opts.Now().UnixNano(), limit: MaxTxSize,
 	}
 	for _, f := range opts {
 		f(&tx.defaults)

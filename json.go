@@ -11,19 +11,20 @@ import (
 )
 
 type revisionJSON struct {
-	Rev      uint64     `json:"rev"`
-	Tx       uint64     `json:"tx"`
-	Key      string     `json:"key"`
-	Value    *string    `json:"value,omitempty"`
-	Encoding string     `json:"encoding,omitempty"`
-	Deleted  bool       `json:"deleted,omitempty"`
-	Actor    string     `json:"actor"`
-	Reason   string     `json:"reason"`
-	Ref      string     `json:"ref,omitempty"`
-	Causes   []CauseRef `json:"causes"`
-	Time     time.Time  `json:"time"`
-	Origin   string     `json:"origin,omitempty"`
-	History  bool       `json:"history,omitempty"`
+	Rev        uint64     `json:"rev"`
+	Tx         uint64     `json:"tx"`
+	Key        string     `json:"key"`
+	Value      *string    `json:"value,omitempty"`
+	Encoding   string     `json:"encoding,omitempty"`
+	Deleted    bool       `json:"deleted,omitempty"`
+	Actor      string     `json:"actor"`
+	Reason     string     `json:"reason"`
+	Ref        string     `json:"ref,omitempty"`
+	Causes     []CauseRef `json:"causes"`
+	Time       time.Time  `json:"time"`
+	Origin     string     `json:"origin,omitempty"`
+	History    bool       `json:"history,omitempty"`
+	Resolution bool       `json:"resolution,omitempty"`
 }
 
 // MarshalJSON writes the value as a string when it is valid UTF-8, and as
@@ -36,7 +37,7 @@ func (r Revision) toJSON() revisionJSON {
 	j := revisionJSON{
 		Rev: r.Rev, Tx: r.Tx, Key: r.Key, Deleted: r.Deleted,
 		Actor: r.Actor, Reason: r.Reason, Ref: r.Ref, Causes: r.Causes, Time: r.Time,
-		Origin: r.Origin, History: r.History,
+		Origin: r.Origin, History: r.History, Resolution: r.Resolution,
 	}
 	if j.Causes == nil {
 		j.Causes = []CauseRef{}
@@ -63,7 +64,7 @@ func (r *Revision) UnmarshalJSON(b []byte) error {
 	*r = Revision{
 		Rev: j.Rev, Tx: j.Tx, Key: j.Key, Deleted: j.Deleted,
 		Actor: j.Actor, Reason: j.Reason, Ref: j.Ref, Causes: j.Causes, Time: j.Time,
-		Origin: j.Origin, History: j.History,
+		Origin: j.Origin, History: j.History, Resolution: j.Resolution,
 	}
 	if len(r.Causes) == 0 {
 		r.Causes = nil

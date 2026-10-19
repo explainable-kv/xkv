@@ -202,6 +202,7 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 	}
 	keys := make(map[string]*keyState, nk)
 	origins := map[ident]uint64{}
+	hist := map[string][]uint64{}
 	revs := make([]revMeta, 0, nr)
 	var prev uint64
 	for i := uint64(0); i < nr && !d.err; i++ {
@@ -241,6 +242,8 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 			}
 			k.revs = append(k.revs, prev)
 			m.key = k.name
+		} else {
+			hist[name] = append(hist[name], prev)
 		}
 		if origin != nil {
 			origins[*origin] = prev
@@ -252,6 +255,7 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 	}
 	db.keys = keys
 	db.origins = origins
+	db.hist = hist
 	db.revs = revs
 	db.lastRev = lastRev
 	db.lastTx = lastTx

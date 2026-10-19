@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,19 +131,19 @@ type exCause struct {
 }
 
 type exRev struct {
-	ID            string    `json:"id"`
-	Key           string    `json:"key"`
-	Value         *string   `json:"value,omitempty"`
-	Encoding      string    `json:"encoding,omitempty"`
-	Deleted       bool      `json:"deleted,omitempty"`
-	Actor         string    `json:"actor"`
-	Reason        string    `json:"reason"`
-	Ref           string    `json:"ref,omitempty"`
-	Time          time.Time `json:"time"`
-	Causes        []exCause `json:"causes,omitempty"`
-	History       bool      `json:"history,omitempty"`
-	Prev          string    `json:"prev,omitempty"`
-	PrevCompacted bool      `json:"prev_compacted,omitempty"`
+	ID         string            `json:"id"`
+	Key        string            `json:"key"`
+	Value      *string           `json:"value,omitempty"`
+	Encoding   string            `json:"encoding,omitempty"`
+	Deleted    bool              `json:"deleted,omitempty"`
+	Actor      string            `json:"actor"`
+	Reason     string            `json:"reason"`
+	Ref        string            `json:"ref,omitempty"`
+	Time       time.Time         `json:"time"`
+	Causes     []exCause         `json:"causes,omitempty"`
+	History    bool              `json:"history,omitempty"`
+	Resolution bool              `json:"resolution,omitempty"`
+	Seen       map[string]uint64 `json:"seen,omitempty"`
 }
 
 type exLine struct {
@@ -177,7 +178,7 @@ func parseIdent(s string) (ident, bool) {
 // file, with their reasons, actors, refs, times and causes, and with every
 // older revision they reach through causes, so a chain arrives whole. Import
 // reads it into another store. A format 1 store is upgraded first (see
-// Upgrade). Writes wait while Export reads; reads go on.
+// Upgrade). Reads and writes go on while Export runs; compaction waits.
 func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (ExportStats, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -185,17 +186,18 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 	if err := db.Upgrade(ctx); err != nil {
 		return ExportStats{}, err
 	}
-	// Holding the writer lock keeps the file still while it is read twice,
-	// without blocking readers.
-	db.wmu.Lock()
-	defer db.wmu.Unlock()
+	// Compaction would move records under the reads below; it waits.
+	// Writers go on: what they add after the start isn't part of this
+	// export.
+	db.xmu.Lock()
+	defer db.xmu.Unlock()
+
 	db.mu.RLock()
-	defer db.mu.RUnlock()
 	if err := db.readGuard(ctx); err != nil {
+		db.mu.RUnlock()
 		return ExportStats{}, err
 	}
 	st := ExportStats{Store: db.hdr.store.String(), Since: opts.Since, Through: db.lastRev}
-
 	// The changes: every revision above Since that is a key's revision,
 	// not a history-only one.
 	first := sort.Search(len(db.revs), func(i int) bool { return db.revs[i].rev > opts.Since })
@@ -216,6 +218,7 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 	}
 	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
+			db.mu.RUnlock()
 			return st, err
 		}
 		rev := queue[len(queue)-1]
@@ -226,6 +229,7 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 		}
 		r, err := db.readRec(m)
 		if err != nil {
+			db.mu.RUnlock()
 			return st, err
 		}
 		for _, c := range r.causes {
@@ -244,6 +248,7 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 			out = append(out, m)
 		}
 	}
+	db.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].rev < out[j].rev })
 
 	h := sha256.New()
@@ -262,6 +267,33 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 	if err := writeLine(exHeader{Exchange: ExchangeVersion, Store: st.Store, Since: opts.Since, Through: st.Through, Created: time.Now().UTC()}); err != nil {
 		return st, err
 	}
+	// What the store had seen of each key just before each change, kept as
+	// a running version vector per key while the changes go out in order.
+	type keyRun struct {
+		all []uint64
+		pos int
+		s   seen
+	}
+	runs := map[string]*keyRun{}
+	seenBefore := func(m revMeta) map[string]uint64 {
+		kr, ok := runs[m.key]
+		if !ok {
+			kr = &keyRun{all: db.allRevs(m.key), s: seen{}}
+			runs[m.key] = kr
+		}
+		for kr.pos < len(kr.all) && kr.all[kr.pos] < m.rev {
+			if pm, ok := db.findRev(kr.all[kr.pos]); ok {
+				kr.s.add(db.identOf(pm))
+			}
+			kr.pos++
+		}
+		out := make(map[string]uint64, len(kr.s))
+		for st, rev := range kr.s {
+			out[st.String()] = rev
+		}
+		return out
+	}
+	// toEx reads one revision; called with mu held for reading.
 	toEx := func(m revMeta) (exRev, error) {
 		history := !inChanges[m.rev]
 		r, err := db.readRec(m)
@@ -269,7 +301,7 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 			return exRev{}, err
 		}
 		x := exRev{
-			ID: db.identOf(m).String(), Key: r.key, Deleted: r.deleted, History: history,
+			ID: db.identOf(m).String(), Key: r.key, Deleted: r.deleted, History: history, Resolution: r.resolution,
 			Actor: r.actor, Reason: r.reason, Ref: r.ref, Time: time.Unix(0, r.time).UTC(),
 		}
 		if !r.deleted {
@@ -290,10 +322,8 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 			x.Causes = append(x.Causes, exCause{Key: c.Key, ID: db.identOf(cm).String()})
 		}
 		if !history {
-			if p, ok := db.prevOf(m); ok {
-				x.Prev = db.identOf(p).String()
-			} else if m.gap {
-				x.PrevCompacted = true
+			if s := seenBefore(m); len(s) > 0 {
+				x.Seen = s
 			}
 		}
 		return x, nil
@@ -304,9 +334,15 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 		}
 		txid := out[i].tx
 		var line []exRev
+		db.mu.RLock()
+		if db.closed {
+			db.mu.RUnlock()
+			return st, ErrClosed
+		}
 		for ; i < len(out) && out[i].tx == txid; i++ {
 			x, err := toEx(out[i])
 			if err != nil {
+				db.mu.RUnlock()
 				return st, err
 			}
 			line = append(line, x)
@@ -316,6 +352,7 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 				st.Revisions++
 			}
 		}
+		db.mu.RUnlock()
 		if err := writeLine(exLine{Tx: line}); err != nil {
 			return st, err
 		}
@@ -336,13 +373,11 @@ func (db *DB) Export(ctx context.Context, w io.Writer, opts ExportOptions) (Expo
 
 // inRev is one revision read from an exchange file and checked.
 type inRev struct {
-	id            ident
-	r             rec // rev, tx and causes unset; causes are in causes
-	causes        []ident
-	causeKeys     []string
-	prev          ident
-	hasPrev       bool
-	prevCompacted bool
+	id        ident
+	r         rec // rev, tx and causes unset; causes are in causes
+	causes    []ident
+	causeKeys []string
+	seen      seen // what the source had seen of the key before this change
 }
 
 type inGroup struct {
@@ -392,6 +427,12 @@ func readExchange(rd io.Reader) (exHeader, []inGroup, error) {
 			if _, err := hex.DecodeString(hdr.Store); err != nil {
 				return bad("the header's store id isn't hex")
 			}
+			if hdr.Since > hdr.Through {
+				return bad("the header's since is above its through")
+			}
+			if !canonical(hdr, line) {
+				return bad("the header isn't written the way xkv writes it")
+			}
 			h.Write(line)
 			lines++
 			continue
@@ -402,6 +443,12 @@ func readExchange(rd io.Reader) (exHeader, []inGroup, error) {
 		}
 		if (l.Tx == nil) == (l.End == nil) {
 			return bad("line %d holds neither or both of tx and end", lines+1)
+		}
+		// Each line must be exactly what Export writes: this refuses extra
+		// text after the object, repeated fields, fields named in another
+		// case, and anything else a decoder would quietly let through.
+		if !canonical(l, line) {
+			return bad("line %d isn't written the way xkv writes it", lines+1)
 		}
 		if l.End != nil {
 			end = l.End
@@ -437,13 +484,27 @@ func readExchange(rd io.Reader) (exHeader, []inGroup, error) {
 	return hdr, groups, nil
 }
 
-func checkExRev(x exRev, seen map[ident]string) (inRev, error) {
+// canonical reports whether line is exactly v as json.Marshal writes it,
+// followed by a newline.
+func canonical(v any, line []byte) bool {
+	b, err := json.Marshal(v)
+	return err == nil && len(line) == len(b)+1 && bytes.Equal(line[:len(b)], b)
+}
+
+// The times a revision can carry: those whose nanoseconds since 1970 fit an
+// int64.
+var (
+	minTime = time.Unix(0, math.MinInt64).UTC()
+	maxTime = time.Unix(0, math.MaxInt64).UTC()
+)
+
+func checkExRev(x exRev, prior map[ident]string) (inRev, error) {
 	var in inRev
 	id, ok := parseIdent(x.ID)
 	if !ok {
 		return in, fmt.Errorf("bad id %q", x.ID)
 	}
-	if _, dup := seen[id]; dup {
+	if _, dup := prior[id]; dup {
 		return in, fmt.Errorf("revision %s appears twice", x.ID)
 	}
 	in.id = id
@@ -482,6 +543,12 @@ func checkExRev(x exRev, seen map[ident]string) (inRev, error) {
 			return in, err
 		}
 	}
+	if x.Actor == "" || x.Reason == "" {
+		return in, errors.New("no actor or no reason")
+	}
+	if x.Time.IsZero() || x.Time.Before(minTime) || x.Time.After(maxTime) {
+		return in, errors.New("no time, or one out of range")
+	}
 	if len(x.Causes) > MaxCauses {
 		return in, fmt.Errorf("%d causes, the limit is %d", len(x.Causes), MaxCauses)
 	}
@@ -493,25 +560,29 @@ func checkExRev(x exRev, seen map[ident]string) (inRev, error) {
 		if err := checkKey(c.Key); err != nil {
 			return in, fmt.Errorf("cause: %v", err)
 		}
-		if k, ok := seen[cid]; ok && k != c.Key {
+		if k, ok := prior[cid]; ok && k != c.Key {
 			return in, fmt.Errorf("cause %s is a revision of %q, not %q", c.ID, k, c.Key)
 		}
 		in.causes = append(in.causes, cid)
 		in.causeKeys = append(in.causeKeys, c.Key)
 	}
-	if x.Prev != "" || x.PrevCompacted {
-		if x.History {
-			return in, errors.New("a history revision with a prev")
-		}
+	if x.Seen != nil && x.History {
+		return in, errors.New("a history revision with a seen list")
 	}
-	if x.Prev != "" {
-		p, ok := parseIdent(x.Prev)
-		if !ok {
-			return in, fmt.Errorf("bad prev %q", x.Prev)
-		}
-		in.prev, in.hasPrev = p, true
+	if len(x.Seen) > 4096 {
+		return in, errors.New("a seen list of more than 4096 stores")
 	}
-	in.prevCompacted = x.PrevCompacted
+	in.seen = seen{}
+	for st, rev := range x.Seen {
+		var id StoreID
+		if len(st) != 32 || rev == 0 {
+			return in, fmt.Errorf("bad seen entry %q", st)
+		}
+		if _, err := hex.Decode(id[:], []byte(st)); err != nil {
+			return in, fmt.Errorf("bad seen entry %q", st)
+		}
+		in.seen[id] = rev
+	}
 	in.r.key = x.Key
 	in.r.deleted = x.Deleted
 	in.r.actor = x.Actor
@@ -519,6 +590,7 @@ func checkExRev(x exRev, seen map[ident]string) (inRev, error) {
 	in.r.ref = x.Ref
 	in.r.time = x.Time.UnixNano()
 	in.r.history = x.History
+	in.r.resolution = x.Resolution
 	o := id
 	in.r.origin = &o
 	return in, nil
@@ -539,9 +611,12 @@ func checkExRev(x exRev, seen map[ident]string) (inRev, error) {
 // wopts and naming both as causes, sets the value opts.Conflicts chooses.
 // The import needs a reason for that (strict mode).
 //
-// The whole file is read and checked before anything is written; a file
-// that is incomplete, changed or invalid is refused with ErrBadExchange. A
-// format 1 store is upgraded first (see Upgrade).
+// The whole file is read and checked against the store before anything is
+// written; a file that is incomplete, changed, invalid, or that disagrees
+// with what the store holds (as a copy of a store, or one restored from a
+// backup, would) is refused with ErrBadExchange. A format 1 store is
+// upgraded first (see Upgrade). Compaction waits while Import runs; other
+// writes go on between its transactions.
 func (db *DB) Import(ctx context.Context, rd io.Reader, opts ImportOptions, wopts ...WriteOption) (ImportReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -561,42 +636,30 @@ func (db *DB) Import(ctx context.Context, rd io.Reader, opts ImportOptions, wopt
 		}
 		reason = "unspecified"
 	}
+	if db.opts.ReadOnly {
+		return rep, ErrReadOnly
+	}
 	hdr, groups, err := readExchange(rd)
 	if err != nil {
 		return rep, err
 	}
 	rep.Store, rep.Since, rep.Through = hdr.Store, hdr.Since, hdr.Through
 	rep.Conflicts = []Conflict{}
+	if _, err := db.checkAgainst(groups); err != nil {
+		return rep, err
+	}
 	if err := db.Upgrade(ctx); err != nil {
 		return rep, err
 	}
-
-	// Every cause must be in the file before the revision naming it, or
-	// already here. Checked now, so a file that can't be imported whole
-	// isn't imported in part.
-	db.mu.RLock()
-	inFile := map[ident]bool{}
-	for _, g := range groups {
-		for _, in := range g.revs {
-			for i, c := range in.causes {
-				if inFile[c] {
-					continue
-				}
-				if rev, ok := db.lookupIdent(c); ok {
-					if m, _ := db.findRev(rev); m.key != in.causeKeys[i] {
-						db.mu.RUnlock()
-						return rep, fmt.Errorf("%w: cause %s of %s is a revision of %q here, not %q", ErrBadExchange, c, in.id, m.key, in.causeKeys[i])
-					}
-					continue
-				}
-				db.mu.RUnlock()
-				return rep, fmt.Errorf("%w: %s names cause %s, which neither the file nor this store holds", ErrBadExchange, in.id, c)
-			}
-			inFile[in.id] = true
-		}
+	// Compaction waits until the import is done, so nothing the checks
+	// found here is dropped part-way.
+	db.xmu.Lock()
+	defer db.xmu.Unlock()
+	needed, err := db.checkAgainst(groups)
+	if err != nil {
+		return rep, err
 	}
-	db.mu.RUnlock()
-
+	im := &importer{db: db, opts: opts, wo: wo, reason: reason, needed: needed, rep: &rep}
 	for _, g := range groups {
 		if err := ctx.Err(); err != nil {
 			return rep, err
@@ -605,7 +668,7 @@ func (db *DB) Import(ctx context.Context, rd io.Reader, opts ImportOptions, wopt
 			// History doesn't change any key's value, so it can go in as
 			// several transactions, each kept under the size limit.
 			for i := 0; i < len(g.revs); {
-				n, err := db.importContext(ctx, g.revs[i:], &rep)
+				n, err := im.history(ctx, g.revs[i:])
 				if err != nil {
 					return rep, err
 				}
@@ -613,11 +676,82 @@ func (db *DB) Import(ctx context.Context, rd io.Reader, opts ImportOptions, wopt
 			}
 			continue
 		}
-		if err := db.importTx(ctx, g.revs, opts, wo, reason, &rep); err != nil {
+		if err := im.tx(ctx, g.revs); err != nil {
 			return rep, err
 		}
 	}
 	return rep, nil
+}
+
+// checkAgainst checks a file against what the store holds, and returns the
+// identities that revisions the import will add name as causes.
+//
+//   - A revision the store holds, by identity, must hold the same thing. Two
+//     stores sharing a store id (a copied file, or one restored from a
+//     backup and written to since) give the same identity to different
+//     revisions; importing would mix them up.
+//   - A revision claiming this store's id with a number it hasn't reached
+//     yet is refused for the same reason.
+//   - Every cause is earlier in the file or held here, as a revision of the
+//     key the file says.
+func (db *DB) checkAgainst(groups []inGroup) (map[ident]bool, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return nil, ErrClosed
+	}
+	needed := map[ident]bool{}
+	inFile := map[ident]bool{}
+	own := db.hdr.version >= 2
+	for _, g := range groups {
+		for _, in := range g.revs {
+			rev, held := db.lookupIdent(in.id)
+			if held {
+				m, _ := db.findRev(rev)
+				r, err := db.readRec(m)
+				if err != nil {
+					return nil, err
+				}
+				if r.key != in.r.key || r.deleted != in.r.deleted || !bytes.Equal(r.value, in.r.value) || r.time != in.r.time || r.actor != in.r.actor || r.reason != in.r.reason || r.ref != in.r.ref {
+					return nil, fmt.Errorf("%w: this store holds a different revision under the identity %s: the two stores share a store id (a copied file, or one restored from a backup); give one a new id with xkv new-id", ErrBadExchange, in.id)
+				}
+			} else if own && in.id.store == db.hdr.store && in.id.rev > db.lastRev {
+				return nil, fmt.Errorf("%w: the file holds revision %s, which claims to come from this store but is above anything it wrote: it was restored from a backup or copied; give it a new id with xkv new-id", ErrBadExchange, in.id)
+			}
+			for i, c := range in.causes {
+				if !held {
+					needed[c] = true
+				}
+				if inFile[c] {
+					continue
+				}
+				crev, ok := db.lookupIdent(c)
+				if !ok {
+					return nil, fmt.Errorf("%w: %s names cause %s, which neither the file nor this store holds", ErrBadExchange, in.id, c)
+				}
+				if m, _ := db.findRev(crev); m.key != in.causeKeys[i] {
+					return nil, fmt.Errorf("%w: cause %s of %s is a revision of %q here, not %q", ErrBadExchange, c, in.id, m.key, in.causeKeys[i])
+				}
+			}
+			inFile[in.id] = true
+		}
+	}
+	return needed, nil
+}
+
+// importTxLimit is how large an imported transaction may grow here: a
+// source transaction up to MaxTxSize, plus the identity each revision now
+// carries and the resolutions conflicts add.
+const importTxLimit = MaxTxSize + MaxTxSize/4
+
+// importer carries one Import's settings and counts.
+type importer struct {
+	db     *DB
+	opts   ImportOptions
+	wo     writeOpts
+	reason string
+	needed map[ident]bool // identities imported revisions name as causes
+	rep    *ImportReport
 }
 
 // newer reports whether a wins over b under NewestWins: the later time, then,
@@ -634,18 +768,27 @@ func newer(a, b *rec) bool {
 	return bytes.Compare(a.value, b.value) > 0
 }
 
-// localCauses maps an imported revision's causes to revisions here: written
-// earlier in this transaction (pending), or already committed.
+func sameValue(a, b *rec) bool {
+	return a.deleted == b.deleted && bytes.Equal(a.value, b.value)
+}
+
+// lookup finds identity id here: written earlier in this transaction
+// (pending) or committed.
+func (db *DB) lookup(id ident, pending map[ident]uint64) (uint64, bool) {
+	if rev, ok := pending[id]; ok {
+		return rev, true
+	}
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.lookupIdent(id)
+}
+
+// localCauses maps an imported revision's causes to revisions here.
 func (db *DB) localCauses(in inRev, pending map[ident]uint64) ([]CauseRef, error) {
 	out := make([]CauseRef, 0, len(in.causes))
 	seen := map[uint64]bool{}
 	for i, c := range in.causes {
-		rev, ok := pending[c]
-		if !ok {
-			db.mu.RLock()
-			rev, ok = db.lookupIdent(c)
-			db.mu.RUnlock()
-		}
+		rev, ok := db.lookup(c, pending)
 		if !ok {
 			return nil, fmt.Errorf("%w: cause %s of %s isn't here", ErrBadCause, c, in.id)
 		}
@@ -658,42 +801,42 @@ func (db *DB) localCauses(in inRev, pending map[ident]uint64) ([]CauseRef, error
 	return out, nil
 }
 
-func (db *DB) has(id ident, pending map[ident]uint64) bool {
-	if _, ok := pending[id]; ok {
-		return true
+// add writes one imported revision into tx, as history when asked.
+func (im *importer) add(tx *Tx, in inRev, history bool, pending map[ident]uint64) (uint64, error) {
+	causes, err := im.db.localCauses(in, pending)
+	if err != nil {
+		return 0, err
 	}
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	_, ok := db.lookupIdent(id)
-	return ok
+	r := in.r
+	r.causes = causes
+	r.history = history
+	got, err := tx.importRev(&r)
+	if err != nil {
+		return 0, fmt.Errorf("importing %s: %w", in.id, err)
+	}
+	pending[in.id] = got.Rev
+	return got.Rev, nil
 }
 
-// importContext imports history revisions from the start of revs, as many
-// as fit in one transaction, and returns how many it went through.
-func (db *DB) importContext(ctx context.Context, revs []inRev, rep *ImportReport) (int, error) {
+// history imports history revisions from the start of revs, as many as fit
+// in one transaction, and returns how many it went through. One that no
+// revision being imported names as a cause isn't needed, and is skipped.
+func (im *importer) history(ctx context.Context, revs []inRev) (int, error) {
 	n, added, skipped := 0, 0, 0
-	_, err := db.update(ctx, func(tx *Tx) error {
+	_, err := im.db.update(ctx, func(tx *Tx) error {
 		pending := map[ident]uint64{}
 		for _, in := range revs {
 			if n > 0 && tx.size+len(in.r.value)+16<<10 > MaxTxSize/2 {
 				break
 			}
 			n++
-			if db.has(in.id, pending) {
+			if _, held := im.db.lookup(in.id, pending); held || !im.needed[in.id] {
 				skipped++
 				continue
 			}
-			causes, err := db.localCauses(in, pending)
-			if err != nil {
+			if _, err := im.add(tx, in, true, pending); err != nil {
 				return err
 			}
-			r := in.r
-			r.causes = causes
-			got, err := tx.importRev(&r)
-			if err != nil {
-				return fmt.Errorf("importing %s: %w", in.id, err)
-			}
-			pending[in.id] = got.Rev
 			added++
 		}
 		return nil
@@ -701,123 +844,253 @@ func (db *DB) importContext(ctx context.Context, revs []inRev, rep *ImportReport
 	if err != nil {
 		return 0, err
 	}
-	rep.Context += added
-	rep.Skipped += skipped
+	im.rep.Context += added
+	im.rep.Skipped += skipped
 	return n, nil
 }
 
-// importTx imports one transaction from the file as one transaction here,
+// tx imports one transaction from the file as one transaction here,
 // settling conflicts as it goes.
-func (db *DB) importTx(ctx context.Context, revs []inRev, opts ImportOptions, wo writeOpts, reason string, rep *ImportReport) error {
+func (im *importer) tx(ctx context.Context, revs []inRev) error {
+	db := im.db
 	var imported, skipped, agreed, context int
 	var conflicts []Conflict
 	_, err := db.update(ctx, func(tx *Tx) error {
+		tx.limit = importTxLimit
 		pending := map[ident]uint64{}
 		for _, in := range revs {
-			if db.has(in.id, pending) {
+			if _, held := db.lookup(in.id, pending); held {
 				skipped++
 				continue
 			}
-			causes, err := db.localCauses(in, pending)
-			if err != nil {
-				return err
-			}
-			r := in.r
-			r.causes = causes
-			if r.history {
-				got, err := tx.importRev(&r)
-				if err != nil {
-					return fmt.Errorf("importing %s: %w", in.id, err)
+			if in.r.history {
+				if !im.needed[in.id] {
+					skipped++
+					continue
 				}
-				pending[in.id] = got.Rev
+				if _, err := im.add(tx, in, true, pending); err != nil {
+					return err
+				}
 				context++
 				continue
 			}
-
-			// The key's current revision here, if any.
-			var cur *rec
-			var curID ident
-			if t, ok := tx.latest[r.key]; ok {
-				cur, curID = t, ident{store: db.hdr.store, rev: t.rev}
-				if t.origin != nil {
-					curID = *t.origin
+			cur, curID, err := im.current(tx, in.r.key)
+			if err != nil {
+				return err
+			}
+			switch im.relation(tx, in, cur) {
+			case relNew:
+				if _, err := im.add(tx, in, false, pending); err != nil {
+					return err
 				}
-			} else {
-				db.mu.RLock()
-				if k, ok := db.keys[r.key]; ok {
-					m, _ := db.findRev(k.latest())
-					cur, err = db.readRec(m)
-					curID = db.identOf(m)
+				imported++
+			case relStale:
+				// An older revision of a line of changes this store is
+				// already past. Kept only if something names it.
+				if !im.needed[in.id] {
+					skipped++
+					continue
 				}
-				db.mu.RUnlock()
+				if _, err := im.add(tx, in, true, pending); err != nil {
+					return err
+				}
+				context++
+			case relAgreed:
+				// Both sides arrived at the same value: keep theirs as
+				// history; nothing to settle.
+				if _, err := im.add(tx, in, true, pending); err != nil {
+					return err
+				}
+				agreed++
+			case relConflict:
+				if in.r.resolution && im.opts.Conflicts != NewestWins {
+					// The other side has settled this conflict already. A
+					// fixed policy on both sides would settle it back and
+					// forth for ever, so its settlement is applied as it
+					// stands: kept as history under ours, taken under
+					// theirs.
+					keep := im.opts.Conflicts == KeepOurs
+					got, err := im.add(tx, in, keep, pending)
+					if err != nil {
+						return err
+					}
+					kept := "theirs"
+					if keep {
+						kept = "ours"
+						context++
+					} else {
+						imported++
+					}
+					conflicts = append(conflicts, Conflict{Key: in.r.key, Ours: cur.rev, Theirs: got, Kept: kept})
+					continue
+				}
+				theirs, err := im.add(tx, in, false, pending)
 				if err != nil {
 					return err
 				}
-			}
-			conflict := cur != nil &&
-				!(in.hasPrev && curID == in.prev) &&
-				!(curID.store == in.id.store && curID.rev < in.id.rev)
-			if conflict && cur.deleted == r.deleted && bytes.Equal(cur.value, r.value) {
-				// Both sides arrived at the same value: keep theirs as
-				// history; nothing to settle.
-				r.history = true
-				got, err := tx.importRev(&r)
+				imported++
+				c, err := im.settle(tx, in, cur, curID, theirs)
 				if err != nil {
-					return fmt.Errorf("importing %s: %w", in.id, err)
+					return err
 				}
-				pending[in.id] = got.Rev
-				agreed++
-				continue
+				conflicts = append(conflicts, c)
 			}
-			got, err := tx.importRev(&r)
-			if err != nil {
-				return fmt.Errorf("importing %s: %w", in.id, err)
-			}
-			pending[in.id] = got.Rev
-			imported++
-			if !conflict {
-				continue
-			}
-			oursWins := false
-			switch opts.Conflicts {
-			case KeepOurs:
-				oursWins = true
-			case TakeTheirs:
-				oursWins = false
-			default:
-				oursWins = newer(cur, &r)
-			}
-			win, kept := &r, "theirs"
-			if oursWins {
-				win, kept = cur, "ours"
-			}
-			why := fmt.Sprintf("%s (import conflict: kept %s)", reason, kept)
-			wopts := []WriteOption{Reason(why), Actor(wo.actor), Ref(wo.ref), Cause(r.key, cur.rev), Cause(r.key, got.Rev)}
-			// The resolution carries the winning change's time, so the rule
-			// sees the change itself next time, not when it was settled.
-			var res Revision
-			now := tx.now
-			tx.now = win.time
-			if win.deleted {
-				res, err = tx.Delete(r.key, wopts...)
-			} else {
-				res, err = tx.Put(r.key, win.value, wopts...)
-			}
-			tx.now = now
-			if err != nil {
-				return fmt.Errorf("settling the conflict on %q: %w", r.key, err)
-			}
-			conflicts = append(conflicts, Conflict{Key: r.key, Ours: cur.rev, Theirs: got.Rev, Resolution: res.Rev, Kept: kept})
 		}
 		return nil
 	}, nil)
 	if err != nil {
 		return err
 	}
-	rep.Imported += imported
-	rep.Skipped += skipped
-	rep.Agreed += agreed
-	rep.Context += context
-	rep.Conflicts = append(rep.Conflicts, conflicts...)
+	im.rep.Imported += imported
+	im.rep.Skipped += skipped
+	im.rep.Agreed += agreed
+	im.rep.Context += context
+	im.rep.Conflicts = append(im.rep.Conflicts, conflicts...)
 	return nil
+}
+
+// current returns key's current revision here, counting writes earlier in
+// tx, and its identity; nil if the key has none.
+func (im *importer) current(tx *Tx, key string) (*rec, ident, error) {
+	db := im.db
+	if t, ok := tx.latest[key]; ok {
+		id := ident{store: db.hdr.store, rev: t.rev}
+		if t.origin != nil {
+			id = *t.origin
+		}
+		return t, id, nil
+	}
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	k, ok := db.keys[key]
+	if !ok {
+		return nil, ident{}, nil
+	}
+	m, _ := db.findRev(k.latest())
+	r, err := db.readRec(m)
+	return r, db.identOf(m), err
+}
+
+// recAt reads a revision here, written in tx or committed.
+func (im *importer) recAt(tx *Tx, rev uint64) *rec {
+	if r, ok := tx.byRev[rev]; ok {
+		return r
+	}
+	db := im.db
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	m, ok := db.findRev(rev)
+	if !ok {
+		return nil
+	}
+	r, err := db.readRec(m)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+type relation int
+
+const (
+	relNew      relation = iota // builds on what this store has: becomes the value
+	relStale                    // older than the store's value, from the same line of changes
+	relAgreed                   // a different change to the same value
+	relConflict                 // both sides changed the key, to different values
+)
+
+// relation decides how an incoming revision of a key relates to what this
+// store has seen of the key: the version vector of every revision of the key
+// it holds, history included (see seen).
+func (im *importer) relation(tx *Tx, in inRev, cur *rec) relation {
+	have := im.seenHere(tx, in.r.key)
+	switch {
+	case have[in.id.store] >= in.id.rev:
+		// This store holds this change's line from its store up to it or
+		// past it: an older change, already superseded here.
+		return relStale
+	case in.seen.covers(have):
+		// The source had seen everything this store has of the key: the
+		// change builds on it.
+		return relNew
+	case cur == nil:
+		// Nothing current here (the key holds only history): nothing to
+		// settle against.
+		return relNew
+	case sameValue(cur, &in.r):
+		return relAgreed
+	}
+	return relConflict
+}
+
+// seenHere returns the version vector of key here, counting revisions
+// written earlier in tx.
+func (im *importer) seenHere(tx *Tx, key string) seen {
+	db := im.db
+	db.mu.RLock()
+	s := db.seenOf(key, 0)
+	db.mu.RUnlock()
+	for _, r := range tx.recs {
+		if r.key != key {
+			continue
+		}
+		if r.origin != nil {
+			s.add(*r.origin)
+		} else {
+			s.add(ident{store: db.hdr.store, rev: r.rev})
+		}
+	}
+	return s
+}
+
+// settle writes the resolution of a conflict on in.r.key between cur (ours)
+// and the imported revision theirs.
+func (im *importer) settle(tx *Tx, in inRev, cur *rec, curID ident, theirs uint64) (Conflict, error) {
+	r := &in.r
+	oursWins := false
+	switch im.opts.Conflicts {
+	case KeepOurs:
+		oursWins = true
+	case TakeTheirs:
+	default:
+		oursWins = newer(cur, r)
+	}
+	win, kept := r, "theirs"
+	if oursWins {
+		win, kept = cur, "ours"
+	}
+	suffix := fmt.Sprintf(" (import conflict: kept %s)", kept)
+	why := im.reason
+	if len(why)+len(suffix) > MaxReasonSize {
+		why = truncateUTF8(why, MaxReasonSize-len(suffix))
+	}
+	why += suffix
+	wopts := []WriteOption{Reason(why), Actor(im.wo.actor), Ref(im.wo.ref), Cause(r.key, cur.rev), Cause(r.key, theirs), func(o *writeOpts) { o.resolve = true }}
+	// The resolution carries the winning change's time, so the rule sees
+	// the change itself next time, not when it was settled.
+	var res Revision
+	var err error
+	now := tx.now
+	tx.now = win.time
+	if win.deleted {
+		res, err = tx.Delete(r.key, wopts...)
+	} else {
+		res, err = tx.Put(r.key, win.value, wopts...)
+	}
+	tx.now = now
+	if err != nil {
+		return Conflict{}, fmt.Errorf("settling the conflict on %q: %w", r.key, err)
+	}
+	return Conflict{Key: r.key, Ours: cur.rev, Theirs: theirs, Resolution: res.Rev, Kept: kept}, nil
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a character.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

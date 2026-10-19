@@ -97,13 +97,17 @@ type Revision struct {
 	// an imported revision names it as a cause. It never becomes its key's
 	// current value and isn't listed in the key's History.
 	History bool
+
+	// Resolution is set on a revision an import wrote to settle a
+	// conflict; its two causes are the two sides.
+	Resolution bool
 }
 
 func (r *rec) revision() Revision {
 	v := Revision{
 		Rev: r.rev, Tx: r.tx, Key: r.key, Value: r.value, Deleted: r.deleted,
 		Actor: r.actor, Reason: r.reason, Ref: r.ref, Causes: r.causes,
-		Time: time.Unix(0, r.time).UTC(), History: r.history,
+		Time: time.Unix(0, r.time).UTC(), History: r.history, Resolution: r.resolution,
 	}
 	if r.origin != nil {
 		v.Origin = r.origin.String()
@@ -139,6 +143,7 @@ type DB struct {
 	path string // "" for memory
 	opts Options
 
+	xmu sync.Mutex   // held by compaction, and by Export and Import, which need records to stay put
 	wmu sync.Mutex   // serialises writers and compaction
 	mu  sync.RWMutex // guards the fields below; held for reading during reads
 
@@ -150,7 +155,8 @@ type DB struct {
 	lastTx  uint64
 	revs    []revMeta // ascending by rev
 	keys    map[string]*keyState
-	origins map[ident]uint64 // identity of each imported revision -> its number here
+	origins map[ident]uint64    // identity of each imported revision -> its number here
+	hist    map[string][]uint64 // history revisions of each key, ascending
 	closed  bool
 	dirty   bool   // index changed since the snapshot was written
 	failed  error  // set when a write left the file in an unknown state
@@ -254,7 +260,7 @@ func OpenMemory(opts *Options) (*DB, error) {
 }
 
 func newDB(opts *Options) *DB {
-	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}}
+	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}, hist: map[string][]uint64{}}
 	if opts != nil {
 		db.opts = *opts
 	}
@@ -421,8 +427,72 @@ func (db *DB) addRev(m revMeta) {
 		}
 		k.revs = append(k.revs, m.rev)
 		m.key = k.name
+	} else {
+		db.hist[m.key] = append(db.hist[m.key], m.rev)
 	}
 	db.revs = append(db.revs, m)
+}
+
+// allRevs returns every revision of key the store holds, history ones
+// included, ascending. Called with mu held.
+func (db *DB) allRevs(key string) []uint64 {
+	var a []uint64
+	if k, ok := db.keys[key]; ok {
+		a = k.revs
+	}
+	h := db.hist[key]
+	if len(h) == 0 {
+		return a
+	}
+	out := make([]uint64, 0, len(a)+len(h))
+	i, j := 0, 0
+	for i < len(a) || j < len(h) {
+		if j == len(h) || (i < len(a) && a[i] < h[j]) {
+			out = append(out, a[i])
+			i++
+		} else {
+			out = append(out, h[j])
+			j++
+		}
+	}
+	return out
+}
+
+// seen is a version vector for one key: for each store, the highest number
+// among its revisions of the key that a store holds. Each store's revisions
+// of a key form one line, so the number stands for that revision and every
+// earlier one from the same store.
+type seen map[StoreID]uint64
+
+func (s seen) add(id ident) {
+	if id.rev > s[id.store] {
+		s[id.store] = id.rev
+	}
+}
+
+// covers reports whether s has seen everything o has.
+func (s seen) covers(o seen) bool {
+	for st, rev := range o {
+		if s[st] < rev {
+			return false
+		}
+	}
+	return true
+}
+
+// seenOf returns the version vector of key from the revisions numbered below
+// before (0: all). Called with mu held.
+func (db *DB) seenOf(key string, before uint64) seen {
+	s := seen{}
+	for _, rev := range db.allRevs(key) {
+		if before != 0 && rev >= before {
+			break
+		}
+		if m, ok := db.findRev(rev); ok {
+			s.add(db.identOf(m))
+		}
+	}
+	return s
 }
 
 // identOf returns the identity of the revision m describes: where it was

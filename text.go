@@ -98,6 +98,9 @@ func textDetail(r Revision, prev *Revision, withCauses, prevCompacted bool) stri
 	if r.History {
 		parts = append(parts, "kept as history")
 	}
+	if r.Resolution {
+		parts = append(parts, "settles an import conflict")
+	}
 	if withCauses && len(r.Causes) > 0 {
 		cs := make([]string, len(r.Causes))
 		for i, c := range r.Causes {

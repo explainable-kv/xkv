@@ -79,6 +79,9 @@ func cmdImport(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return usageError{err.Error()}
 	}
+	if p.str("reason") == "" && !p.bools["relaxed"] {
+		return xkv.ErrNoReason
+	}
 	var in io.Reader = stdin
 	if p.pos[1] != "-" {
 		f, err := os.Open(p.pos[1])
@@ -150,5 +153,40 @@ func cmdUpgrade(args []string, stdout io.Writer) error {
 		return nil
 	}
 	fmt.Fprintf(stdout, "upgraded from file format %d to %d, every revision kept; store id %s\n", before.Format, after.Format, after.StoreID)
+	return nil
+}
+
+func cmdNewID(args []string, stdout io.Writer) error {
+	p, err := parseArgs(args, flagSpec{"keep-through": false})
+	if err != nil {
+		return usageError{err.Error()}
+	}
+	if len(p.pos) != 1 {
+		return usagef("want FILE")
+	}
+	if _, err := os.Stat(p.pos[0]); err != nil {
+		return err
+	}
+	db, err := xkv.Open(p.pos[0], nil)
+	if err != nil {
+		return err
+	}
+	before, _ := db.Stats()
+	keep := before.LastRev
+	if p.has("keep-through") {
+		if keep, err = parseRev(p.str("keep-through")); err != nil {
+			db.Close()
+			return err
+		}
+	}
+	err = db.NewStoreID(context.Background(), keep)
+	after, _ := db.Stats()
+	if cerr := db.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "store id %s (was %s); revisions up to r%d keep their identity from the old id\n", after.StoreID, before.StoreID, keep)
 	return nil
 }

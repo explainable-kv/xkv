@@ -241,6 +241,12 @@ func newHandler(db *xkv.DB) http.Handler {
 			}
 			opts.Since = v
 		}
+		// A GET doesn't rewrite the file: a format 1 store needs POST
+		// /v1/upgrade first.
+		if s, err := db.Stats(); err == nil && s.Format < 2 {
+			fail(w, http.StatusConflict, "the store uses file format 1; POST /v1/upgrade first")
+			return
+		}
 		// Built in memory first, so an error can still be reported as one
 		// rather than as a cut-off file.
 		var buf bytes.Buffer
@@ -279,7 +285,20 @@ func newHandler(db *xkv.DB) http.Handler {
 			fail(w, http.StatusRequestEntityTooLarge, "exchange file too large for one request")
 			return
 		}
+		if err != nil && rep.Imported+rep.Context+rep.Agreed+len(rep.Conflicts) > 0 {
+			// Part of the file went in before the failure: say so, with
+			// what was done. Importing again carries on.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "partial": true, "report": rep})
+			return
+		}
 		reply(w, rep, err)
+	})
+	mux.HandleFunc("POST /v1/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		err := db.Upgrade(r.Context())
+		s, _ := db.Stats()
+		reply(w, map[string]any{"format": s.Format, "store_id": s.StoreID}, err)
 	})
 	return mux
 }

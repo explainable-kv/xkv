@@ -29,10 +29,11 @@ const (
 	recRevision = 1
 	recCommit   = 2
 
-	flagDeleted = 1
-	flagOrigin  = 2 // the revision was imported; its first identity follows the causes
-	flagHistory = 4 // kept for the record (an imported cause); never a key's current value
-	flagsAll    = flagDeleted | flagOrigin | flagHistory
+	flagDeleted    = 1
+	flagOrigin     = 2 // the revision was imported; its first identity follows the causes
+	flagHistory    = 4 // kept for the record (an imported cause); never a key's current value
+	flagResolution = 8 // written by an import to settle a conflict
+	flagsAll       = flagDeleted | flagOrigin | flagHistory | flagResolution
 )
 
 // Limits on what one write may hold.
@@ -158,18 +159,19 @@ func decodeHeader(b []byte) (header, error) {
 
 // rec is a decoded revision record.
 type rec struct {
-	rev     uint64
-	tx      uint64
-	deleted bool
-	time    int64
-	key     string
-	value   []byte
-	actor   string
-	reason  string
-	ref     string
-	causes  []CauseRef
-	history bool   // flagHistory
-	origin  *ident // flagOrigin: where an imported revision was first written
+	rev        uint64
+	tx         uint64
+	deleted    bool
+	time       int64
+	key        string
+	value      []byte
+	actor      string
+	reason     string
+	ref        string
+	causes     []CauseRef
+	history    bool   // flagHistory
+	resolution bool   // flagResolution
+	origin     *ident // flagOrigin: where an imported revision was first written
 }
 
 type commit struct {
@@ -218,6 +220,9 @@ func encodeRev(r *rec) []byte {
 	}
 	if r.history {
 		flags |= flagHistory
+	}
+	if r.resolution {
+		flags |= flagResolution
 	}
 	b = append(b, flags)
 	b = binary.AppendVarint(b, r.time)
@@ -329,6 +334,7 @@ func decodeRev(body []byte) (*rec, error) {
 	flags := d.byte1()
 	r.deleted = flags&flagDeleted != 0
 	r.history = flags&flagHistory != 0
+	r.resolution = flags&flagResolution != 0
 	r.time = d.varint()
 	r.key = d.str(MaxKeySize)
 	r.value = append([]byte(nil), d.bytes(MaxValueSize)...)

@@ -236,6 +236,10 @@ How it fits together:
   times it moves. So importing the same file twice changes nothing, a
   store's own changes coming back are recognised, and causes land on the
   right revisions.
+- **Updates and conflicts told apart.** Each change carries what its store
+  had seen of the key when it was made. A change made knowing everything
+  the importing store has is an update; one made without seeing a change
+  the importing store has is a conflict. Clocks don't decide that.
 - **Whole chains.** An export also carries the older revisions its changes
   reach through causes. They arrive as history: `Why` follows them, but they
   never become a key's value.
@@ -250,6 +254,10 @@ How it fits together:
   carries a count and a SHA-256) before anything is written. A cut or
   changed file is refused whole. Each transaction in the file is imported
   as one transaction, so an import killed part-way can simply be run again.
+- **Copies need their own id.** A copied store file keeps its store id, and
+  two stores sharing one can't exchange: the import is refused rather than
+  mixing them up. Run `xkv new-id` on the copy; the history the two share
+  stays recognised as shared.
 
 [docs/exchange.md](docs/exchange.md) describes the file line by line.
 
@@ -277,6 +285,7 @@ format 2 file.
 | `xkv export FILE [--since REV] [--out PATH]` | the changes above REV as an exchange file |
 | `xkv import FILE EXCHANGE --reason R [--conflicts newest\|ours\|theirs]` | add an exchange file's changes (`-` reads standard input) |
 | `xkv upgrade FILE` | rewrite a 0.1 store as file format 2 |
+| `xkv new-id FILE [--keep-through REV]` | give a copied store file its own store id |
 | `xkv serve FILE [--addr HOST:PORT]` | HTTP mode |
 
 Most commands take `--json`. Writes need a reason unless `--relaxed` is
@@ -382,7 +391,11 @@ The numbers here come from [test/results](test/results), written by
   {{TW_REVS}} revisions, {{TW_CONFLICTS}} conflicts settled and
   {{TW_AGREED}} changes both sides had made alike. Every pair settled to
   the same values, and without compaction each store held every revision
-  the other did.
+  the other did. Then {{TW_AFTER}} edits made after settling each reached
+  the other store as an ordinary change. Separate tests cover edits after
+  settling under every policy with clocks an hour apart, a copied store, a
+  store restored from a backup, importing again after compaction, and an
+  import while the store compacts.
 - **Exchange, one way.** Over {{INC_ROUNDS}} rounds of incremental exports,
   the importing store gave the same values and the same `Why` trees as the
   source after every round.
@@ -393,7 +406,10 @@ The numbers here come from [test/results](test/results), written by
   imported twice.
 - **Bad exchange files.** An export cut at every byte, and {{MUT_RUNS}}
   copies with a few bytes changed, dropped or added, were all refused whole,
-  with nothing written.
+  with nothing written. A fuzzer rewrote exchange files and sealed them
+  with a correct checksum, so its changes reached the checks behind it,
+  {{FUZZ_IMPORT}} times: none panicked, and every accepted file left a sound
+  store.
 - **Format 1 stores.** A file written by xkv 0.1 opens, answers as before,
   takes writes, and upgrades to format 2 with every revision and its number
   kept.

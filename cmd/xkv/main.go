@@ -38,6 +38,7 @@ Usage:
   xkv export FILE [--since REV] [--out PATH]      changes since REV, for another store
   xkv import FILE EXCHANGE --reason TEXT [--conflicts newest|ours|theirs] [--actor NAME] [--ref REF]
   xkv upgrade FILE                                rewrite a 0.1 store as file format 2
+  xkv new-id FILE [--keep-through REV]            a new store id, for a copy of a store file
   xkv serve FILE [--addr 127.0.0.1:7070] [--relaxed]
   xkv version
 
@@ -150,6 +151,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err = cmdImport(rest, stdin, stdout)
 	case "upgrade":
 		err = cmdUpgrade(rest, stdout)
+	case "new-id":
+		err = cmdNewID(rest, stdout)
 	case "serve":
 		err = cmdServe(rest, stdout, stderr)
 	case "version", "--version", "-v":

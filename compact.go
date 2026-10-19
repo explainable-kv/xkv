@@ -31,6 +31,7 @@ type CompactStats struct {
 	RevisionsBefore int
 	RevisionsAfter  int
 	KeptForCauses   int // revisions kept only because a kept revision points at them
+	KeptForExchange int // revisions kept only as the newest of their key from some store, which exchange needs
 	BytesBefore     int64
 	BytesAfter      int64
 }
@@ -39,7 +40,7 @@ type CompactStats struct {
 // Writes wait while it runs; reads go on. The new file replaces the old one
 // with an atomic rename, so a compaction cut short leaves the old file whole.
 func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, error) {
-	return db.compact(ctx, opts, false)
+	return db.compact(ctx, opts, false, nil)
 }
 
 // Upgrade rewrites a format 1 store as format 2, keeping every revision and
@@ -59,14 +60,47 @@ func (db *DB) Upgrade(ctx context.Context) error {
 	if db.opts.ReadOnly {
 		return fmt.Errorf("%w: the store uses file format 1 and needs upgrading first (xkv upgrade)", ErrReadOnly)
 	}
-	_, err := db.compact(ctx, CompactOptions{}, true)
+	_, err := db.compact(ctx, CompactOptions{}, true, nil)
 	return err
 }
 
-func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (CompactStats, error) {
+// NewStoreID gives the store a new id, for a copy of a store file (or one
+// restored from a backup) that will exchange with the original. Two stores
+// sharing an id can't exchange: Import refuses, because the same identity
+// would name different revisions.
+//
+// Revisions numbered up to keepThrough keep their identity under the old
+// id, so the history the copy shares with the original is still recognised
+// as shared; pass the copy's last revision when it was made (Stats.LastRev
+// then), or 0 to give every revision a new identity. Revisions above it
+// become this store's own under the new id. The file is rewritten like a
+// compaction that keeps everything.
+func (db *DB) NewStoreID(ctx context.Context, keepThrough uint64) error {
+	db.mu.RLock()
+	v, closed := db.hdr.version, db.closed
+	db.mu.RUnlock()
+	if closed {
+		return ErrClosed
+	}
+	if db.opts.ReadOnly {
+		return ErrReadOnly
+	}
+	if v < 2 {
+		// A format 1 store has no id yet: upgrading draws one.
+		return db.Upgrade(ctx)
+	}
+	_, err := db.compact(ctx, CompactOptions{}, true, &keepThrough)
+	return err
+}
+
+// compact rewrites the file. With reid set it also draws a new store id,
+// and revisions numbered up to *reid keep their old identity as an origin.
+func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, reid *uint64) (CompactStats, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	db.xmu.Lock()
+	defer db.xmu.Unlock()
 	db.wmu.Lock()
 	defer db.wmu.Unlock()
 
@@ -80,12 +114,13 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (C
 		return CompactStats{}, ErrReadOnly
 	}
 	st := CompactStats{RevisionsBefore: len(db.revs), BytesBefore: db.end}
-	keep, causeOnly, err := db.markLive(ctx, opts, keepAll)
+	keep, causeOnly, exOnly, err := db.markLive(ctx, opts, keepAll)
 	if err != nil {
 		db.mu.RUnlock()
 		return st, err
 	}
 	st.KeptForCauses = causeOnly
+	st.KeptForExchange = exOnly
 
 	// Copy the kept frames, in revision order, into a new file. Frames are
 	// copied byte for byte; each transaction's commit record is rewritten
@@ -112,10 +147,14 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (C
 		}
 	}
 	h, err := db.hdr.rewrite()
+	if err == nil && reid != nil {
+		h, err = newHeader()
+	}
 	if err != nil {
 		db.mu.RUnlock()
 		return st, err
 	}
+	oldStore := db.hdr.store
 	var out storage
 	var tmpF *os.File
 	tmp := db.path + compactSuffix
@@ -168,6 +207,14 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (C
 			if body, total := checkFrame(b); body == nil || total != int(m.n) {
 				return fail(fmt.Errorf("%w: revision %d fails its checksum", ErrCorrupt, m.rev))
 			}
+			if reid != nil && m.origin == nil && m.rev <= *reid {
+				r, err := db.readRec(m)
+				if err != nil {
+					return fail(err)
+				}
+				r.origin = &ident{store: oldStore, rev: m.rev}
+				b = frame(encodeRev(r))
+			}
 			w.write(b)
 			count++
 			last = m.rev
@@ -214,6 +261,7 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (C
 	db.hdr = h
 	db.keys = map[string]*keyState{}
 	db.origins = map[ident]uint64{}
+	db.hist = map[string][]uint64{}
 	db.revs = db.revs[:0:0]
 	lastRev, lastTx := db.lastRev, db.lastTx
 	size, err := db.st.Size()
@@ -247,13 +295,13 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (C
 // markLive returns the set of revisions to keep, and how many of them are
 // kept only because a kept revision points at them. Called with mu held for
 // reading.
-func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (map[uint64]bool, int, error) {
+func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (map[uint64]bool, int, int, error) {
 	if keepAll {
 		keep := make(map[uint64]bool, len(db.revs))
 		for _, m := range db.revs {
 			keep[m.rev] = true
 		}
-		return keep, 0, nil
+		return keep, 0, 0, nil
 	}
 	keepLast := opts.KeepLast
 	if keepLast < 1 {
@@ -279,6 +327,34 @@ func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (
 			}
 		}
 	}
+	// For each key, the newest revision from each store it has revisions
+	// from: what the store has seen of the key, which Import compares
+	// against (see seen). For a store that never exchanged, that is just
+	// the latest.
+	exOnly := 0
+	keyNames := make(map[string]bool, len(db.keys)+len(db.hist))
+	for name := range db.keys {
+		keyNames[name] = true
+	}
+	for name := range db.hist {
+		keyNames[name] = true
+	}
+	for name := range keyNames {
+		newest := map[StoreID]bool{}
+		all := db.allRevs(name)
+		for i := len(all) - 1; i >= 0; i-- {
+			m, _ := db.findRev(all[i])
+			id := db.identOf(m)
+			if newest[id.store] {
+				continue
+			}
+			newest[id.store] = true
+			if !keep[m.rev] {
+				keep[m.rev] = true
+				exOnly++
+			}
+		}
+	}
 	for rev := range keep {
 		queue = append(queue, rev)
 	}
@@ -286,7 +362,7 @@ func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (
 	causeOnly := 0
 	for len(queue) > 0 {
 		if err := ctx.Err(); err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		rev := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -296,7 +372,7 @@ func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (
 		}
 		r, err := db.readRec(m)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		for _, c := range r.causes {
 			if !keep[c.Rev] {
@@ -306,7 +382,7 @@ func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (
 			}
 		}
 	}
-	return keep, causeOnly, nil
+	return keep, causeOnly, exOnly, nil
 }
 
 // bufWriter batches writes to a storage.

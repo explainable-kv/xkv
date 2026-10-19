@@ -359,3 +359,63 @@ func TestHTTPExchange(t *testing.T) {
 		t.Fatalf("bad since: %d", resp.StatusCode)
 	}
 }
+
+func TestNewIDAndUpgradeEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.xkv")
+	if _, e, code := xkvRun(t, "", "put", a, "k", "v", "--reason", "r"); code != 0 {
+		t.Fatal(e)
+	}
+	// An import without a reason doesn't create the store.
+	nb := filepath.Join(dir, "never.xkv")
+	if _, _, code := xkvRun(t, "", "import", nb, "x.xkvx"); code != 1 {
+		t.Fatalf("import without reason: %d", code)
+	}
+	if _, err := os.Stat(nb); !os.IsNotExist(err) {
+		t.Fatal("an import refused for want of a reason created the store")
+	}
+	// A copy shares the id until new-id.
+	data, _ := os.ReadFile(a)
+	b := filepath.Join(dir, "b.xkv")
+	os.WriteFile(b, data, 0o644)
+	ex := filepath.Join(dir, "b.xkvx")
+	if _, e, code := xkvRun(t, "", "put", b, "y", "1", "--reason", "r"); code != 0 {
+		t.Fatal(e)
+	}
+	xkvRun(t, "", "export", b, "--out", ex)
+	if _, e, code := xkvRun(t, "", "import", a, ex, "--reason", "s"); code != 1 || !strings.Contains(e, "new-id") {
+		t.Fatalf("import from a copy: %d %s", code, e)
+	}
+	if out, e, code := xkvRun(t, "", "new-id", b, "--keep-through", "1"); code != 0 || !strings.Contains(out, "store id") {
+		t.Fatalf("new-id: %d %s %s", code, out, e)
+	}
+	xkvRun(t, "", "export", b, "--out", ex)
+	if out, e, code := xkvRun(t, "", "import", a, ex, "--reason", "s"); code != 0 || !strings.Contains(out, "1 imported") {
+		t.Fatalf("import after new-id: %d %s %s", code, out, e)
+	}
+
+	// Over HTTP, a format 1 store needs POST /v1/upgrade before an export.
+	old := filepath.Join(dir, "old.xkv")
+	d1, _ := os.ReadFile(filepath.Join("..", "..", "testdata", "format1.xkv"))
+	os.WriteFile(old, d1, 0o644)
+	db, err := xkv.Open(old, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(newHandler(db))
+	defer srv.Close()
+	if resp, _ := http.Get(srv.URL + "/v1/export"); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("export of format 1: %d", resp.StatusCode)
+	}
+	resp, _ := http.Post(srv.URL+"/v1/upgrade", "", nil)
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || m["format"] != 2.0 {
+		t.Fatalf("upgrade: %d %v", resp.StatusCode, m)
+	}
+	if resp, _ := http.Get(srv.URL + "/v1/export"); resp.StatusCode != 200 {
+		t.Fatalf("export after upgrade: %d", resp.StatusCode)
+	}
+}

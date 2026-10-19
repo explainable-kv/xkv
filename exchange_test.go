@@ -460,7 +460,7 @@ func TestExchangeTwoWayConverges(t *testing.T) {
 	if testing.Short() {
 		seeds = 5
 	}
-	totalConflicts, totalAgreed, totalRevs := 0, 0, 0
+	totalConflicts, totalAgreed, totalRevs, afterEdits := 0, 0, 0, 0
 	for seed := 1; seed <= seeds; seed++ {
 		rng := rand.New(rand.NewSource(int64(seed)))
 		base := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
@@ -525,6 +525,25 @@ func TestExchangeTwoWayConverges(t *testing.T) {
 		if !settled {
 			t.Fatalf("seed %d: still exchanging changes after six rounds", seed)
 		}
+		// Once settled, an edit on one side is an ordinary change: it
+		// reaches the other side as it is, with no conflict.
+		for i := 0; i < 5; i++ {
+			side := rng.Intn(2)
+			key := fmt.Sprintf("k%d", rng.Intn(8))
+			val := fmt.Sprintf("after-%d-%d", seed, i)
+			must[Revision](t)(dbs[side].Put(bg, key, []byte(val), Reason("edit after settling"), Actor("x")))
+			r1 := sync(side, 1-side)
+			r2 := sync(1-side, side)
+			if len(r1.Conflicts)+len(r2.Conflicts) != 0 {
+				t.Fatalf("seed %d: an edit after settling made conflicts: %+v %+v", seed, r1, r2)
+			}
+			for _, db := range dbs {
+				if v := must[Revision](t)(db.Get(bg, key)); string(v.Value) != val {
+					t.Fatalf("seed %d: %s is %q, the edit was %q", seed, key, v.Value, val)
+				}
+			}
+			afterEdits++
+		}
 		sameValues(t, dbs[0], dbs[1])
 		for _, db := range dbs {
 			if rep, err := Check(db.Path()); err != nil || !rep.OK() {
@@ -560,7 +579,7 @@ func TestExchangeTwoWayConverges(t *testing.T) {
 			other.mu.RUnlock()
 		}
 	}
-	t.Logf("%d seeds of two stores writing, exchanging both ways at random and compacting now and then: %d revisions written, %d conflicts settled, %d changes both sides had made alike; every seed settled to the same values on both stores, both files passed the check, and in the seeds without compaction each store held every revision the other held", seeds, totalRevs, totalConflicts, totalAgreed)
+	t.Logf("%d seeds of two stores writing, exchanging both ways at random and compacting now and then: %d revisions written, %d conflicts settled, %d changes both sides had made alike; every seed settled to the same values on both stores, both files passed the check, and in the seeds without compaction each store held every revision the other held; then %d edits made after settling each reached the other store as an ordinary change, with no conflict", seeds, totalRevs, totalConflicts, totalAgreed, afterEdits)
 }
 
 func TestExportNeedsNoWritesFromFormat2ReadOnly(t *testing.T) {
@@ -660,32 +679,65 @@ func TestFormat1Store(t *testing.T) {
 	}
 }
 
-// FuzzImport feeds Import arbitrary bytes. It must never panic, and
-// whatever it accepts must leave a store that checks out.
+// FuzzImport feeds Import arbitrary exchange file bodies, each sealed with
+// a correct end line so the mutations reach the checks behind the checksum.
+// It must never panic, and whatever it accepts must leave a store that
+// checks out and holds no identity twice.
 func FuzzImport(f *testing.F) {
 	src, _ := OpenMemory(&Options{Now: clock()})
 	chain(f, src)
-	var full, part bytes.Buffer
-	src.Export(bg, &full, ExportOptions{})
-	src.Export(bg, &part, ExportOptions{Since: 3})
-	f.Add(full.Bytes())
-	f.Add(part.Bytes())
-	f.Add([]byte("{\"xkv_exchange\":1}\n"))
-	f.Fuzz(func(t *testing.T, b []byte) {
-		dir := t.TempDir()
-		db, err := Open(filepath.Join(dir, "f.xkv"), &Options{NoSync: true, Now: clock()})
+	for _, since := range []uint64{0, 3} {
+		var buf bytes.Buffer
+		src.Export(bg, &buf, ExportOptions{Since: since})
+		lines := bytes.SplitAfter(buf.Bytes(), []byte("\n"))
+		f.Add(bytes.Join(lines[:len(lines)-2], nil)) // without the end line
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		ls := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+		data := reseal(ls)
+		db, err := OpenMemory(&Options{Now: clock()})
 		if err != nil {
 			t.Fatal(err)
 		}
 		must[Revision](t)(db.Put(bg, "risk:42:score", []byte("local"), Reason("local"), Actor("x")))
-		_, err = db.Import(bg, bytes.NewReader(b), ImportOptions{}, Reason("fuzz"))
-		db.Close()
-		if err == nil {
-			if rep, cerr := Check(filepath.Join(dir, "f.xkv")); cerr != nil || !rep.OK() {
-				t.Fatalf("an accepted import left a bad file: %v %v", cerr, rep.Problems)
-			}
+		if _, err := db.Import(bg, bytes.NewReader(data), ImportOptions{}, Reason("fuzz")); err == nil {
+			checkIndex(t, db)
 		}
 	})
+}
+
+// checkIndex checks a store's invariants in memory: every revision reads
+// back, every cause exists and belongs to its key, no identity is held
+// twice, and no history revision is a key's value.
+func checkIndex(t testing.TB, db *DB) {
+	t.Helper()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	seen := map[ident]bool{}
+	for _, m := range db.revs {
+		r, err := db.readRec(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := db.identOf(m)
+		if seen[id] {
+			t.Fatalf("identity %s held twice", id)
+		}
+		seen[id] = true
+		for _, c := range r.causes {
+			cm, ok := db.findRev(c.Rev)
+			if !ok || cm.key != c.Key || c.Rev >= m.rev {
+				t.Fatalf("revision %d: bad cause %v", m.rev, c)
+			}
+		}
+	}
+	for name, k := range db.keys {
+		for _, rev := range k.revs {
+			if m, _ := db.findRev(rev); m.history || m.key != name {
+				t.Fatalf("key %q lists revision %d wrongly", name, rev)
+			}
+		}
+	}
 }
 
 // TestImportMutatedFiles imports an export with a few bytes changed,
