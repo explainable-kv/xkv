@@ -11,6 +11,7 @@ import (
 // lastRev from the newer file and never sees the writer's new revisions,
 // which reuse numbers it has already counted.
 func TestReview2RestoredBackupSameStore(t *testing.T) {
+	skipReplacingOpenFile(t)
 	p := tmpPath(t)
 	w := openT(t, p, nil)
 	for i := 0; i < 3; i++ {
@@ -49,6 +50,7 @@ func TestReview2RestoredBackupSameStore(t *testing.T) {
 // A format 1 store deleted and recreated (as format 2): no store id to
 // compare, so the follower is silently stuck as before.
 func TestReview2Format1Recreated(t *testing.T) {
+	skipReplacingOpenFile(t)
 	p := tmpPath(t)
 	b, _ := os.ReadFile("testdata/format1.xkv")
 	os.WriteFile(p, b, 0o644)

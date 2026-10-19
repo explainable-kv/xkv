@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -278,6 +279,7 @@ func TestWatchFnWrites(t *testing.T) {
 // A read-only handle follows a writable one on the same file, through
 // compaction.
 func TestWatchFollowsTheFile(t *testing.T) {
+	skipReplacingOpenFile(t)
 	p := tmpPath(t)
 	w := openT(t, p, nil)
 	must[Revision](t)(w.Put(bg, "k", []byte("0"), Reason("r"), Actor("x")))
@@ -298,5 +300,15 @@ func TestWatchFollowsTheFile(t *testing.T) {
 	// The handle itself now reads the compacted file.
 	if v := must[Revision](t)(r.Get(bg, "k")); string(v.Value) != "after" {
 		t.Fatalf("%q", v.Value)
+	}
+}
+
+// skipReplacingOpenFile skips a test that replaces or renames over a file
+// another handle has open: Windows doesn't allow that (README, Compaction),
+// so there the situation the test builds can't arise.
+func skipReplacingOpenFile(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows can't replace a file another handle has open")
 	}
 }

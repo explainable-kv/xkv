@@ -70,6 +70,7 @@ func TestReviewFollowFromEmptyFile(t *testing.T) {
 // R3: the file is replaced by a different store (deleted and recreated, or
 // a backup restored). The follower silently stops seeing writes.
 func TestReviewFollowReplacedStore(t *testing.T) {
+	skipReplacingOpenFile(t)
 	p := tmpPath(t)
 	w := openT(t, p, nil)
 	for i := 0; i < 10; i++ {
@@ -121,6 +122,7 @@ func TestReviewPrefixWatcherToldOfAnyGap(t *testing.T) {
 // R5: stress: concurrent multi-revision transactions, compaction, a watcher
 // on the writer and a follower. Order, no repeats, whole transactions.
 func TestReviewStress(t *testing.T) {
+	skipReplacingOpenFile(t)
 	p := tmpPath(t)
 	w := openT(t, p, &Options{NoSync: true})
 	r := openT(t, p, &Options{ReadOnly: true})
@@ -219,6 +221,7 @@ func TestReviewStress(t *testing.T) {
 
 // R6: fn calls Refresh and Compact (read-only and writable): no deadlock.
 func TestReviewFnRefreshCompact(t *testing.T) {
+	skipReplacingOpenFile(t)
 	p := tmpPath(t)
 	w := openT(t, p, nil)
 	r := openT(t, p, &Options{ReadOnly: true})
