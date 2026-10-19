@@ -12,15 +12,24 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 var bg = context.Background()
 
+// clock ticks a second per call. Safe for concurrent use, as Options.Now
+// must be.
 func clock() func() time.Time {
+	var mu sync.Mutex
 	t := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
-	return func() time.Time { t = t.Add(time.Second); return t }
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		t = t.Add(time.Second)
+		return t
+	}
 }
 
 func openT(t *testing.T, path string, opts *Options) *DB {

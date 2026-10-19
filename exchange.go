@@ -111,7 +111,7 @@ type ImportReport struct {
 	Imported  int        `json:"imported"`
 	Context   int        `json:"context"` // older revisions imported as history
 	Skipped   int        `json:"skipped"` // already here
-	Agreed    int        `json:"agreed"`  // changed on both sides to the same value; kept as history
+	Agreed    int        `json:"agreed"`  // changed on both sides to the same value; the newer stands, the other is history
 	Conflicts []Conflict `json:"conflicts"`
 }
 
@@ -657,6 +657,11 @@ func (db *DB) Import(ctx context.Context, rd io.Reader, opts ImportOptions) (Imp
 //     no revision, and no seen list.
 //   - Every cause is earlier in the file or held here, as a revision of the
 //     key the file says.
+//   - No time lies more than a year past this store's clock: a write here
+//     is recorded later than every revision of its key, so a time at the
+//     end of the range would leave no room for one.
+//   - No key would have seen more stores than a revision's seen list can
+//     hold.
 func (db *DB) checkAgainst(groups []inGroup) (map[ident]bool, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -667,8 +672,41 @@ func (db *DB) checkAgainst(groups []inGroup) (map[ident]bool, error) {
 	inFile := map[ident]bool{}
 	own := db.hdr.version >= 2
 	future := func(id ident) bool { return own && id.store == db.hdr.store && id.rev > db.lastRev }
+	latest := db.opts.Now().Add(maxTimeAhead).UnixNano()
+	stores := map[string]map[StoreID]bool{} // per key in the file, the stores it would have seen
+	note := func(key string, st StoreID) error {
+		if own && st == db.hdr.store {
+			return nil
+		}
+		s := stores[key]
+		if s == nil {
+			s = map[StoreID]bool{}
+			for _, e := range db.keySeen[key] {
+				if !own || e.store != db.hdr.store {
+					s[e.store] = true
+				}
+			}
+			stores[key] = s
+		}
+		s[st] = true
+		if len(s) > maxSeen-1 {
+			return fmt.Errorf("%w: key %q would have seen revisions from more than %d stores", ErrBadExchange, key, maxSeen-1)
+		}
+		return nil
+	}
 	for _, g := range groups {
 		for _, in := range g.revs {
+			if in.r.time > latest {
+				return nil, fmt.Errorf("%w: revision %s is dated %s, more than a year past this store's clock", ErrBadExchange, in.id, time.Unix(0, in.r.time).UTC().Format(time.RFC3339))
+			}
+			if err := note(in.r.key, in.id.store); err != nil {
+				return nil, err
+			}
+			for st := range in.seen {
+				if err := note(in.r.key, st); err != nil {
+					return nil, err
+				}
+			}
 			rev, held := db.lookupIdent(in.id)
 			if held {
 				m, _ := db.findRev(rev)
@@ -707,6 +745,10 @@ func (db *DB) checkAgainst(groups []inGroup) (map[ident]bool, error) {
 	}
 	return needed, nil
 }
+
+// maxTimeAhead is how far past this store's clock an imported revision's
+// time may lie.
+const maxTimeAhead = 366 * 24 * time.Hour
 
 // importTxLimit is how large an imported transaction may grow here: a
 // source transaction up to MaxTxSize, plus the identity each revision now

@@ -64,7 +64,8 @@ type Options struct {
 	DefaultActor string
 
 	// Now returns the time recorded on each write. Tests set it; the
-	// default is time.Now. A write is never recorded earlier than a
+	// default is time.Now. It may be called from several goroutines at
+	// once. A write is never recorded earlier than a
 	// revision of its key the store holds: if Now reads earlier, the
 	// write gets that revision's time plus a nanosecond.
 	Now func() time.Time
@@ -96,9 +97,11 @@ type Revision struct {
 	// revision written to this store.
 	Origin string
 
-	// History is set on a revision imported for the record only, because
-	// an imported revision names it as a cause. It never becomes its key's
-	// current value and isn't listed in the key's History.
+	// History is set on a revision imported for the record only: the
+	// losing side of a conflict, the older of two changes to the same
+	// value, a change the current value was written knowing, or an older
+	// revision an imported one names as a cause. It never becomes its
+	// key's current value; History lists it, marked.
 	History bool
 }
 
@@ -516,16 +519,19 @@ func (s seen) list(skip StoreID) []seenEntry {
 // the key's revisions when needed, so a store that never exchanges keeps
 // nothing here. Called with mu held for writing.
 func (db *DB) noteSeen(key string, id ident) {
+	// Kept sorted by store id, so a long list is searched, not scanned.
 	l := db.keySeen[key]
-	for i := range l {
-		if l[i].store == id.store {
-			if id.rev > l[i].rev {
-				l[i].rev = id.rev
-			}
-			return
+	i := sort.Search(len(l), func(i int) bool { return bytes.Compare(l[i].store[:], id.store[:]) >= 0 })
+	if i < len(l) && l[i].store == id.store {
+		if id.rev > l[i].rev {
+			l[i].rev = id.rev
 		}
+		return
 	}
-	db.keySeen[key] = append(l, seenEntry{id.store, id.rev})
+	l = append(l, seenEntry{})
+	copy(l[i+1:], l[i:])
+	l[i] = seenEntry{id.store, id.rev}
+	db.keySeen[key] = l
 }
 
 // haveOf returns what the store has seen of key: every store's line it

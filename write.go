@@ -159,8 +159,12 @@ func (tx *Tx) write(key string, value []byte, deleted bool, opts []WriteOption) 
 		seen[ref] = true
 		causes = append(causes, ref)
 	}
+	when, err := tx.timeFor(key)
+	if err != nil {
+		return Revision{}, err
+	}
 	r := &rec{
-		rev: tx.nextRev, tx: tx.txid, deleted: deleted, time: tx.timeFor(key),
+		rev: tx.nextRev, tx: tx.txid, deleted: deleted, time: when,
 		key: key, actor: actor, reason: reason, ref: o.ref, causes: causes,
 		seen: tx.seenFor(key),
 	}
@@ -168,6 +172,9 @@ func (tx *Tx) write(key string, value []byte, deleted bool, opts []WriteOption) 
 		r.value = append([]byte{}, value...)
 	}
 	f := frame(encodeRev(r))
+	if len(f)-frameSize > maxRecord {
+		return Revision{}, fmt.Errorf("%w: the record would be %d bytes, the limit is %d", ErrTooLarge, len(f)-frameSize, maxRecord)
+	}
 	if tx.size+len(f) > tx.limit {
 		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, tx.limit)
 	}
@@ -217,6 +224,9 @@ func (tx *Tx) importRev(r *rec) (Revision, error) {
 		r.value = nil
 	}
 	f := frame(encodeRev(r))
+	if len(f)-frameSize > maxRecord {
+		return Revision{}, fmt.Errorf("%w: the record would be %d bytes, the limit is %d", ErrTooLarge, len(f)-frameSize, maxRecord)
+	}
 	if tx.size+len(f) > tx.limit {
 		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, tx.limit)
 	}
@@ -252,19 +262,22 @@ func (tx *Tx) importRev(r *rec) (Revision, error) {
 // past the latest of those, so a write is always later than every revision
 // of its key its writer knew, whatever the clocks say. That is what lets
 // the newest-wins policy agree with the order changes were made in.
-func (tx *Tx) timeFor(key string) int64 {
+func (tx *Tx) timeFor(key string) (int64, error) {
 	t := tx.now
 	db := tx.db
 	db.mu.RLock()
 	kt, ok := db.keyTime[key]
 	db.mu.RUnlock()
-	if ok && kt >= t && kt < math.MaxInt64 {
+	if tt, ok2 := tx.times[key]; ok2 && (!ok || tt > kt) {
+		kt, ok = tt, true
+	}
+	if ok && kt >= t {
+		if kt == math.MaxInt64 {
+			return 0, fmt.Errorf("%w: %q has a revision dated at the end of the time range; no later time is left", ErrInvalid, key)
+		}
 		t = kt + 1
 	}
-	if kt, ok := tx.times[key]; ok && kt >= t && kt < math.MaxInt64 {
-		t = kt + 1
-	}
-	return t
+	return t, nil
 }
 
 func (tx *Tx) noteTime(r *rec) {

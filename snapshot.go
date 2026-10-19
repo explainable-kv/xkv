@@ -280,9 +280,15 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 		}
 		l := make([]seenEntry, n)
 		for j := range l {
+			if len(d.b) < 16 {
+				return 0, false
+			}
 			copy(l[j].store[:], d.b[:16])
 			d.b = d.b[16:]
 			l[j].rev = d.uvarint()
+			if j > 0 && bytes.Compare(l[j-1].store[:], l[j].store[:]) >= 0 {
+				return 0, false
+			}
 		}
 		keySeen[name] = l
 	}

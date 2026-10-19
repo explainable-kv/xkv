@@ -51,8 +51,12 @@ const (
 )
 
 // maxRecord bounds the body length a frame may claim; anything larger is
-// treated as damage, never allocated.
-const maxRecord = MaxValueSize + 4*MaxKeySize + MaxActorSize + MaxReasonSize + MaxRefSize + MaxCauses*(MaxKeySize+16) + 96
+// treated as damage, never allocated. It has room for the largest revision
+// a writer accepts: every field at its limit, an origin, and a seen list of
+// maxSeen entries (a 16-byte store id and a uvarint each). Writers check it
+// too, so nothing is committed that couldn't be read back.
+const maxRecord = MaxValueSize + 4*MaxKeySize + MaxActorSize + MaxReasonSize + MaxRefSize + MaxCauses*(MaxKeySize+16) + 96 +
+	(16 + binary.MaxVarintLen64) + binary.MaxVarintLen64 + maxSeen*(16+binary.MaxVarintLen64)
 
 var (
 	magic   = [4]byte{'X', 'K', 'V', 'F'}

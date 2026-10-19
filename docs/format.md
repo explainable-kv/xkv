@@ -53,7 +53,7 @@ Every record sits in a frame:
 
 | Size | Field |
 |---|---|
-| 4 | body length *n*, from 1 to 16,831,968 (the largest record the limits allow) |
+| 4 | body length *n*, from 1 to 16,938,500 (the largest record the limits allow, with an origin and a seen list of 4096 entries) |
 | 4 | CRC-32C of the body |
 | *n* | body |
 
@@ -79,7 +79,7 @@ commit.
 | origin | only with flag bit 1: the store id it was first written to (16 bytes), then its revision number there (uvarint, 1 or more) |
 | seen | only with flag bit 3: uvarint count, 1 to 4096, then for each: a store id (16 bytes) and a revision number (uvarint, 1 or more), store ids strictly increasing |
 
-Bits 1, 2 and 3 appear only in version 2 files. An imported revision keeps its
+Bits 1, 2 and 3 are written only in version 2 files. An imported revision keeps its
 origin through every later exchange, so the pair (store id, revision) names
 it in every store that holds it. A revision written to this store has no
 origin field; its identity is this file's store id and its own number.

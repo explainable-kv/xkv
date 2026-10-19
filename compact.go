@@ -155,6 +155,19 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, re
 		return st, err
 	}
 	oldStore := db.hdr.store
+	// With a new id, the revisions written after keepThrough become this
+	// store's own line; what they knew of the line before (now the old
+	// id's) goes into their seen lists. For each key: its newest revision
+	// written here up to keepThrough.
+	var shared map[string]uint64
+	if reid != nil {
+		shared = map[string]uint64{}
+		for _, m := range db.revs {
+			if m.origin == nil && m.rev <= *reid && m.rev > shared[m.key] {
+				shared[m.key] = m.rev
+			}
+		}
+	}
 	var out storage
 	var tmpF *os.File
 	tmp := db.path + compactSuffix
@@ -213,6 +226,20 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, re
 					return fail(err)
 				}
 				r.origin = &ident{store: oldStore, rev: m.rev}
+				b = frame(encodeRev(r))
+			} else if reid != nil && m.origin == nil && shared[m.key] > 0 {
+				r, err := db.readRec(m)
+				if err != nil {
+					return fail(err)
+				}
+				s := seen{oldStore: shared[m.key]}
+				for _, e := range r.seen {
+					s.add(ident{e.store, e.rev})
+				}
+				r.seen = s.list(h.store)
+				if len(r.seen) > maxSeen {
+					return fail(fmt.Errorf("%w: revision %d of %q would have seen more than %d stores", ErrTooLarge, m.rev, m.key, maxSeen))
+				}
 				b = frame(encodeRev(r))
 			}
 			w.write(b)
@@ -342,17 +369,22 @@ func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (
 		keyNames[name] = true
 	}
 	for name := range keyNames {
-		newest := map[StoreID]bool{}
-		all := db.allRevs(name)
-		for i := len(all) - 1; i >= 0; i-- {
-			m, _ := db.findRev(all[i])
+		// Newest by the number in its own store: an older revision of a
+		// store's line can arrive here after a newer one (as the cause of
+		// a change relayed by a third store).
+		newest := map[StoreID]ident{}
+		local := map[StoreID]uint64{}
+		for _, rev := range db.allRevs(name) {
+			m, _ := db.findRev(rev)
 			id := db.identOf(m)
-			if newest[id.store] {
-				continue
+			if id.rev > newest[id.store].rev {
+				newest[id.store] = id
+				local[id.store] = m.rev
 			}
-			newest[id.store] = true
-			if !keep[m.rev] {
-				keep[m.rev] = true
+		}
+		for _, rev := range local {
+			if !keep[rev] {
+				keep[rev] = true
 				exOnly++
 			}
 		}

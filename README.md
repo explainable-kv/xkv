@@ -359,7 +359,8 @@ It doesn't:
   `LockFileEx` on Windows; on platforms with neither (Solaris, AIX, the
   browser) nothing stops two writers, so don't start two.
 - **sync on its own or authenticate.** Exchange moves files you pass it;
-  when and where they go is up to you. The HTTP mode is for localhost.
+  when and where they go is up to you. Import only files from stores you
+  run: a store can't check what a file claims about third stores. The HTTP mode is for localhost.
 - **scale to huge data.** The index of every revision lives in memory,
   roughly 70 bytes per revision. Values belong in the store; big blobs
   don't.

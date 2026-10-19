@@ -89,6 +89,11 @@ against the store:
   value, actor, reason, ref and time;
 - no revision may claim this store's id with a number above anything it has
   written, and no seen list may claim to have seen such a revision;
+- no time may lie more than a year past this store's clock (a write here is
+  always recorded later than the revisions of its key, and a time at the
+  end of the range would leave no room);
+- no key may end up having seen more than 4095 other stores, so the seen
+  list of a write here always fits in a revision;
 - every cause is earlier in the file or held by the store, as a revision of
   the key the file names.
 
@@ -115,15 +120,16 @@ come between its transactions.
   an update: it is added and becomes the value. If the current value's
   writer had seen the change instead, the change is added as history.
 - Otherwise both sides changed the key without seeing the other's change.
-  If both arrived at the same value, the incoming revision is added as
-  history and nothing else happens. If the values differ, it is a
+  If both arrived at the same value, the newer of the two (as `newest`
+  would pick) stands as the value and the other is history; the value
+  reads the same either way. If the values differ, it is a
   conflict. The policy picks the winner: the winner is the key's value,
   and the loser is kept in its history, so `History` lists both and marks
   the loser. No new revision is written to settle it; a later change made
   knowing the winner is simply an update, on every store.
 
 Compaction keeps, for every key, the newest revision from each store it has
-revisions from, so a key's seen list survives compaction and importing an
+revisions from (newest by that store's own numbering), so a key's seen list survives compaction and importing an
 old file after compacting still changes nothing.
 
 The policies:
@@ -177,7 +183,18 @@ backup, it is the backup's last revision. A new id can't be undone.
 
 - An exchange file is read into memory whole before anything is written.
 - A revision the importing store holds only as history stays history, even
-  if a later file carries it as a change.
+  if a later file carries it as a change. Normally that is right: it arrived
+  as history because a revision here already supersedes it. But an export
+  with a `since` past changes the importer never got sends those only as
+  context, and the stores' values can then differ until the key is written
+  again. Keep one `since` per pair of stores: the `through` of the last
+  file this store imported from that one.
+- Exchange files are trusted input. An import checks a file's form, its
+  checksum and everything it says about revisions this store holds or
+  wrote, but it can't check what a seen list says about a third store. A
+  file claiming more of store C than C wrote makes the importer skip C's
+  real changes to that key as old ones, and C then refuses every file that
+  carries the claim on. Import only files from stores you run.
 - With `ours` or `theirs` on both sides, two stores can settle a conflict
   differently and keep different values; only `newest` makes them agree.
   A change made after that, knowing the value, is an update everywhere.
