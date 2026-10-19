@@ -258,7 +258,7 @@ func TestExchangeScale(t *testing.T) {
 	exp := time.Since(t0)
 	dst := openT(t, tmpPath(t), nil)
 	t0 = time.Now()
-	rep, err := dst.Import(bg, bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("load"))
+	rep, err := dst.Import(bg, bytes.NewReader(buf.Bytes()), ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestExchangeScale(t *testing.T) {
 		t.Fatalf("%+v %+v", st, rep)
 	}
 	t0 = time.Now()
-	again, err := dst.Import(bg, bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("load"))
+	again, err := dst.Import(bg, bytes.NewReader(buf.Bytes()), ImportOptions{})
 	if err != nil || again.Skipped != n {
 		t.Fatalf("%v %+v", err, again)
 	}

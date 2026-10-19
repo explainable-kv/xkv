@@ -25,7 +25,6 @@ type writeOpts struct {
 	actor     string
 	ref       string
 	causes    []causeSpec
-	resolve   bool // the write settles an import conflict
 }
 
 // Reason records why the write was made. In strict mode (the default) every
@@ -66,7 +65,9 @@ type Tx struct {
 	latest   map[string]*rec // this transaction's newest revision per key
 	byRev    map[uint64]*rec
 	now      int64
-	limit    int // bytes the transaction may hold: MaxTxSize, more for an import
+	limit    int              // bytes the transaction may hold: MaxTxSize, more for an import
+	imported map[string]seen  // other stores' revisions this transaction imported, by key
+	times    map[string]int64 // the latest time of a revision this transaction added, by key
 	finished bool
 }
 
@@ -159,9 +160,9 @@ func (tx *Tx) write(key string, value []byte, deleted bool, opts []WriteOption) 
 		causes = append(causes, ref)
 	}
 	r := &rec{
-		rev: tx.nextRev, tx: tx.txid, deleted: deleted, time: tx.now,
+		rev: tx.nextRev, tx: tx.txid, deleted: deleted, time: tx.timeFor(key),
 		key: key, actor: actor, reason: reason, ref: o.ref, causes: causes,
-		resolution: o.resolve,
+		seen: tx.seenFor(key),
 	}
 	if !deleted {
 		r.value = append([]byte{}, value...)
@@ -176,6 +177,7 @@ func (tx *Tx) write(key string, value []byte, deleted bool, opts []WriteOption) 
 	tx.size += len(f)
 	tx.latest[key] = r
 	tx.byRev[r.rev] = r
+	tx.noteTime(r)
 	return r.revision(), nil
 }
 
@@ -226,7 +228,76 @@ func (tx *Tx) importRev(r *rec) (Revision, error) {
 		tx.latest[r.key] = r
 	}
 	tx.byRev[r.rev] = r
+	tx.noteTime(r)
+	if r.origin != nil {
+		if tx.imported == nil {
+			tx.imported = map[string]seen{}
+		}
+		s := tx.imported[r.key]
+		if s == nil {
+			s = seen{}
+			tx.imported[r.key] = s
+		}
+		s.add(*r.origin)
+		for _, e := range r.seen {
+			s.add(ident{e.store, e.rev})
+		}
+	}
 	return r.revision(), nil
+}
+
+// timeFor is the time a write of key in this transaction records: the
+// clock's, unless a revision of the key the store holds (or this
+// transaction adds) has that time or a later one. Then it is a nanosecond
+// past the latest of those, so a write is always later than every revision
+// of its key its writer knew, whatever the clocks say. That is what lets
+// the newest-wins policy agree with the order changes were made in.
+func (tx *Tx) timeFor(key string) int64 {
+	t := tx.now
+	db := tx.db
+	db.mu.RLock()
+	kt, ok := db.keyTime[key]
+	db.mu.RUnlock()
+	if ok && kt >= t && kt < math.MaxInt64 {
+		t = kt + 1
+	}
+	if kt, ok := tx.times[key]; ok && kt >= t && kt < math.MaxInt64 {
+		t = kt + 1
+	}
+	return t
+}
+
+func (tx *Tx) noteTime(r *rec) {
+	if tx.times == nil {
+		tx.times = map[string]int64{}
+	}
+	if t, ok := tx.times[r.key]; !ok || r.time > t {
+		tx.times[r.key] = r.time
+	}
+}
+
+// seenFor returns what a write of key in this transaction has seen of the
+// key from other stores: the revisions of it the store holds that were
+// imported, and any imported earlier in this transaction. A store that
+// never exchanges has none, and its writes carry no list.
+func (tx *Tx) seenFor(key string) []seenEntry {
+	db := tx.db
+	db.mu.RLock()
+	base := db.keySeen[key]
+	own := db.hdr.store
+	db.mu.RUnlock()
+	extra := tx.imported[key]
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	s := seen{}
+	for _, e := range base {
+		s[e.store] = e.rev
+	}
+	for st, rev := range extra {
+		s.add(ident{st, rev})
+	}
+	return s.list(own)
 }
 
 // resolveCause checks one cause against the committed store and this
@@ -381,7 +452,7 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 	off := start
 	out := make([]Revision, len(tx.recs))
 	for i, r := range tx.recs {
-		db.addRev(revMeta{rev: r.rev, tx: r.tx, off: off, n: uint32(len(tx.frames[i])), deleted: r.deleted, history: r.history, time: r.time, key: r.key, origin: r.origin})
+		db.addRev(revMeta{rev: r.rev, tx: r.tx, off: off, n: uint32(len(tx.frames[i])), deleted: r.deleted, history: r.history, time: r.time, key: r.key, origin: r.origin}, r.seen)
 		off += int64(len(tx.frames[i]))
 		out[i] = r.revision()
 	}

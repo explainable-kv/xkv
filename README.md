@@ -117,7 +117,12 @@ tree.WriteText(os.Stdout)                        // printed like the xkv command
 A `Revision` carries `Rev`, `Tx`, `Key`, `Value`, `Deleted`, `Actor`,
 `Reason`, `Ref`, `Causes` and `Time`. An imported one also has `Origin`,
 where it was first written, and `History` when it was imported for the
-record only (see [Exchange between stores](#exchange-between-stores)).
+record only, such as the losing side of a conflict (see [Exchange between stores](#exchange-between-stores)).
+
+A write's `Time` is the clock's, except that it is never earlier than a
+revision of the same key the store already holds: if the clock reads
+earlier (it was set back, or an imported change came from a store whose
+clock runs ahead), the write is recorded a nanosecond after the latest one.
 
 ### Transactions
 
@@ -219,13 +224,13 @@ another store. Each change keeps its actor, reason, ref, time and causes, so
 
 ```sh
 xkv export site-a.xkv --since 120 --out a-changes.xkvx
-xkv import site-b.xkv a-changes.xkvx --reason "nightly sync from site A"
+xkv import site-b.xkv a-changes.xkvx
 ```
 
 ```go
 var buf bytes.Buffer
 st, err := a.Export(ctx, &buf, xkv.ExportOptions{Since: lastThrough})
-rep, err := b.Import(ctx, &buf, xkv.ImportOptions{}, xkv.Reason("nightly sync from site A"))
+rep, err := b.Import(ctx, &buf, xkv.ImportOptions{})
 lastThrough = st.Through // send only what's new next time
 ```
 
@@ -236,18 +241,19 @@ How it fits together:
   times it moves. So importing the same file twice changes nothing, a
   store's own changes coming back are recognised, and causes land on the
   right revisions.
-- **Updates and conflicts told apart.** Each change carries what its store
-  had seen of the key when it was made. A change made knowing everything
-  the importing store has is an update; one made without seeing a change
-  the importing store has is a conflict. Clocks don't decide that.
+- **Updates and conflicts told apart.** Each change carries what its writer
+  had seen of the key when it was made, and keeps that as it moves from
+  store to store. A change made knowing the importing store's current value
+  is an update; one made without seeing it is a conflict. Clocks don't
+  decide that.
 - **Whole chains.** An export also carries the older revisions its changes
   reach through causes. They arrive as history: `Why` follows them, but they
   never become a key's value.
 - **Conflicts kept.** When both stores changed a key since they last
-  exchanged, nothing is dropped. The other side's change goes into the
-  key's history, and the import writes a resolution revision that names
-  both as its causes. By default the later change wins (`newest`), and both
-  stores pick the same one, so stores that exchange both ways end up alike.
+  exchanged, nothing is dropped. One change becomes the value and the other
+  stays in the key's history, where `History` shows it. By default the later
+  change wins (`newest`), and every store picks the same one, so stores that
+  exchange both ways, in a pair, a ring or a star, end up alike.
   `--conflicts ours` or `theirs` choose a side instead. If both sides made
   the same change, there's nothing to settle.
 - **Checked first.** The whole file is read and checked (its end line
@@ -256,8 +262,9 @@ How it fits together:
   as one transaction, so an import killed part-way can simply be run again.
 - **Copies need their own id.** A copied store file keeps its store id, and
   two stores sharing one can't exchange: the import is refused rather than
-  mixing them up. Run `xkv new-id` on the copy; the history the two share
-  stays recognised as shared.
+  mixing them up. Run `xkv new-id` on the copy before it exchanges
+  anything, with `--keep-through` naming the last revision the two share;
+  that history stays recognised as shared.
 
 [docs/exchange.md](docs/exchange.md) describes the file line by line.
 
@@ -283,9 +290,9 @@ format 2 file.
 | `xkv compact FILE [--keep N] [--keep-days D]` | compact |
 | `xkv repair FILE` | trim a damaged file back to its last good transaction |
 | `xkv export FILE [--since REV] [--out PATH]` | the changes above REV as an exchange file |
-| `xkv import FILE EXCHANGE --reason R [--conflicts newest\|ours\|theirs]` | add an exchange file's changes (`-` reads standard input) |
+| `xkv import FILE EXCHANGE [--conflicts newest\|ours\|theirs]` | add an exchange file's changes (`-` reads standard input) |
 | `xkv upgrade FILE` | rewrite a 0.1 store as file format 2 |
-| `xkv new-id FILE [--keep-through REV]` | give a copied store file its own store id |
+| `xkv new-id FILE --keep-through REV` | give a copied store file its own store id |
 | `xkv serve FILE [--addr HOST:PORT]` | HTTP mode |
 
 Most commands take `--json`. Writes need a reason unless `--relaxed` is
@@ -337,7 +344,7 @@ It promises:
   carries on from a state it can't vouch for.
 - **Compaction never breaks a chain.** See above.
 - **An exchange loses nothing.** An import keeps every change it brings,
-  conflicting ones as history beside the resolution, and a file that is cut
+  the losing side of a conflict as history beside the winner, and a file that is cut
   or changed is refused before anything is written. Importing twice changes
   nothing.
 - **Revision numbers only go up**, also across compaction.
@@ -396,6 +403,11 @@ The numbers here come from [test/results](test/results), written by
   settling under every policy with clocks an hour apart, a copied store, a
   store restored from a backup, importing again after compaction, and an
   import while the store compacts.
+- **Many stores.** {{RS_RUNS}} runs of three or four stores, linked in a
+  ring, a star or a mesh, with clocks up to 74 minutes apart, took random
+  writes and exchanged along the links at random: {{RS_CONFLICTS}}
+  conflicts settled, and every run ended with the same values on every
+  store. An edit made after that reached every store with no conflict.
 - **Exchange, one way.** Over {{INC_ROUNDS}} rounds of incremental exports,
   the importing store gave the same values and the same `Why` trees as the
   source after every round.

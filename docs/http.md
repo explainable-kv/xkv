@@ -24,7 +24,7 @@ xkv serve settings.xkv --addr 127.0.0.1:7070
 | `GET /v1/revs/REV/why?depth=N` | the tree behind one revision |
 | `GET /v1/stats` | counts, the file format and the store id |
 | `GET /v1/export?since=REV` | an exchange file of the changes above REV (see [exchange.md](exchange.md)); the `X-Xkv-Through` header gives the REV for next time |
-| `POST /v1/import?reason=R` | import the exchange file in the body; also `conflicts=newest\|ours\|theirs`, `ref`, `actor`. Answers with the import report |
+| `POST /v1/import` | import the exchange file in the body; `conflicts=newest\|ours\|theirs` picks the policy. Answers with the import report; a failure part-way answers 500 with `"partial":true` and the report of what was done |
 | `POST /v1/upgrade` | rewrite a 0.1 store as file format 2; an export of a format 1 store answers 409 until then |
 
 Keys may contain slashes: `/v1/keys/config/db/timeout` is the key

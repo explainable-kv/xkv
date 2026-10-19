@@ -115,7 +115,7 @@ func TestHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(out, "start")
 		out.Flush()
-		if _, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(data), ImportOptions{}, Reason("sync")); err != nil {
+		if _, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(data), ImportOptions{}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
@@ -414,7 +414,7 @@ func TestKillDuringImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	rrep, err := rdb.Import(WithActor(bg, "sync"), bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("sync"))
+	rrep, err := rdb.Import(WithActor(bg, "sync"), bytes.NewReader(buf.Bytes()), ImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestKillDuringImport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
-		rep, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("sync"))
+		rep, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(buf.Bytes()), ImportOptions{})
 		if err != nil {
 			t.Fatalf("run %d: import again: %v", run, err)
 		}

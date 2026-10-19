@@ -67,7 +67,7 @@ commit.
 | type | byte `1` |
 | rev | uvarint, 1 or more, strictly increasing through the file |
 | tx | uvarint, the transaction id, 1 or more |
-| flags | byte: bit 0, this revision deletes the key; bit 1, it was imported and its origin follows the causes; bit 2, it is history only (see below); bit 3, an import wrote it to settle a conflict; other bits zero |
+| flags | byte: bit 0, this revision deletes the key; bit 1, it was imported and its origin follows the causes; bit 2, it is history only (see below); bit 3, a seen list follows the origin; other bits zero |
 | time | varint, nanoseconds since 1970-01-01 UTC |
 | key | string, 1 to 4096 bytes |
 | value | uvarint length + bytes, up to 16 MiB; empty for a delete |
@@ -77,18 +77,25 @@ commit.
 | cause count | uvarint, 0 to 8 |
 | causes | for each: key (string) then rev (uvarint) |
 | origin | only with flag bit 1: the store id it was first written to (16 bytes), then its revision number there (uvarint, 1 or more) |
+| seen | only with flag bit 3: uvarint count, 1 to 4096, then for each: a store id (16 bytes) and a revision number (uvarint, 1 or more), store ids strictly increasing |
 
 Bits 1, 2 and 3 appear only in version 2 files. An imported revision keeps its
 origin through every later exchange, so the pair (store id, revision) names
 it in every store that holds it. A revision written to this store has no
 origin field; its identity is this file's store id and its own number.
 
+The seen list is what the revision's writer had seen of its key from other
+stores just before writing it: for each store, the highest revision number
+of that store's line of the key (see [exchange.md](exchange.md)). The
+writer's own store is left out, since the identity implies it. An imported
+revision keeps the seen list it was written with.
+
 A history revision (bit 2) was imported for the record only: because an
-imported revision names it as a cause, or because it made the same change
-this store had already made. It is part of the file like any other, and causes may
-point at it, but it is not in its key's list of revisions: it is never the
-key's current value, `History` doesn't list it, and it has no known
-previous revision.
+imported revision names it as a cause, because it lost a conflict, or
+because it made the same change this store had already made. It is part of
+the file like any other, and causes may point at it, but it is never the
+key's current value and has no known previous revision. `History` lists it,
+marked as history.
 
 Each cause names an earlier revision: its rev is at least 1 and lower than
 this revision's rev. The writer checks, before writing, that the cause exists
@@ -165,6 +172,7 @@ file and a rename, with the data file's permissions.
 | key table | uvarint count, then each key as a string |
 | store table | uvarint count, then 16-byte store ids, for the origins of imported revisions |
 | entries | uvarint count, then for each revision: rev delta, tx, offset, frame length (uvarints), flags (byte: bit 0 deleted, bit 1 gap, bit 2 history, bit 3 imported), time (varint), then the key number (uvarint), or for a history revision the key itself (string), then for an imported one its origin's store number and revision (uvarints) |
+| seen table | uvarint count, then for each key: the key (string), a uvarint count, and that many pairs of a store id (16 bytes) and a revision (uvarint): the highest revision the store holds or knows of from each other store's line of the key |
 | checksum | 4 bytes, CRC-32C of everything before it |
 
 Open uses the snapshot only if it describes the data file exactly: its

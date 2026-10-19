@@ -246,10 +246,7 @@ func TestExchangeCommands(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "exported 2 revisions") || !strings.Contains(out, "--since 2") {
 		t.Fatalf("export: %d %s %s", code, out, e)
 	}
-	if _, e, code := xkvRun(t, "", "import", b, ex); code != 1 || !strings.Contains(e, "reason") {
-		t.Fatalf("import without a reason: %d %s", code, e)
-	}
-	out, e, code = xkvRun(t, "", "import", b, ex, "--reason", "nightly sync from site a")
+	out, e, code = xkvRun(t, "", "import", b, ex)
 	if code != 0 || !strings.Contains(out, "2 imported") {
 		t.Fatalf("import: %d %s %s", code, out, e)
 	}
@@ -264,7 +261,7 @@ func TestExchangeCommands(t *testing.T) {
 	if code != 0 {
 		t.Fatal("export to stdout failed")
 	}
-	out, e, code = xkvRun(t, exStdout, "import", b, "-", "--reason", "sync", "--conflicts", "ours", "--json")
+	out, e, code = xkvRun(t, exStdout, "import", b, "-", "--conflicts", "ours", "--json")
 	if code != 0 {
 		t.Fatalf("import from stdin: %s", e)
 	}
@@ -275,10 +272,10 @@ func TestExchangeCommands(t *testing.T) {
 	if out, _, _ := xkvRun(t, "", "get", b, "risk:42:score"); strings.TrimSpace(out) != "0.5" {
 		t.Fatalf("kept ours: %q", out)
 	}
-	if _, e, code := xkvRun(t, exStdout, "import", b, "-", "--reason", "x", "--conflicts", "mine"); code != 2 {
+	if _, e, code := xkvRun(t, exStdout, "import", b, "-", "--conflicts", "mine"); code != 2 {
 		t.Fatalf("bad policy: %d %s", code, e)
 	}
-	if _, e, code := xkvRun(t, exStdout[:len(exStdout)/2], "import", b, "-", "--reason", "x"); code != 1 || !strings.Contains(e, "not a valid exchange file") {
+	if _, e, code := xkvRun(t, exStdout[:len(exStdout)/2], "import", b, "-"); code != 1 || !strings.Contains(e, "not a valid exchange file") {
 		t.Fatalf("cut file: %d %s", code, e)
 	}
 	out, _, _ = xkvRun(t, "", "stats", b)
@@ -343,16 +340,13 @@ func TestHTTPExchange(t *testing.T) {
 		json.NewDecoder(resp.Body).Decode(&m)
 		return resp.StatusCode, m
 	}
-	if code, _ := post("", ex.Bytes()); code != 400 {
-		t.Fatalf("no reason: %d", code)
-	}
-	if code, m := post("?reason=sync&conflicts=theirs", ex.Bytes()); code != 200 || m["imported"] != 1.0 {
+	if code, m := post("?conflicts=theirs", ex.Bytes()); code != 200 || m["imported"] != 1.0 {
 		t.Fatalf("import: %d %v", code, m)
 	}
-	if code, _ := post("?reason=sync", ex.Bytes()[:ex.Len()-3]); code != 400 {
+	if code, _ := post("", ex.Bytes()[:ex.Len()-3]); code != 400 {
 		t.Fatalf("cut file: %d", code)
 	}
-	if code, _ := post("?reason=sync&conflicts=mine", ex.Bytes()); code != 400 {
+	if code, _ := post("?conflicts=mine", ex.Bytes()); code != 400 {
 		t.Fatalf("bad policy: %d", code)
 	}
 	if resp, _ := http.Get(sa.URL + "/v1/export?since=x"); resp.StatusCode != 400 {
@@ -366,13 +360,9 @@ func TestNewIDAndUpgradeEndpoints(t *testing.T) {
 	if _, e, code := xkvRun(t, "", "put", a, "k", "v", "--reason", "r"); code != 0 {
 		t.Fatal(e)
 	}
-	// An import without a reason doesn't create the store.
-	nb := filepath.Join(dir, "never.xkv")
-	if _, _, code := xkvRun(t, "", "import", nb, "x.xkvx"); code != 1 {
-		t.Fatalf("import without reason: %d", code)
-	}
-	if _, err := os.Stat(nb); !os.IsNotExist(err) {
-		t.Fatal("an import refused for want of a reason created the store")
+	// new-id needs to be told what the copy shares.
+	if _, _, code := xkvRun(t, "", "new-id", a); code != 2 {
+		t.Fatalf("new-id without --keep-through: %d", code)
 	}
 	// A copy shares the id until new-id.
 	data, _ := os.ReadFile(a)
@@ -383,14 +373,14 @@ func TestNewIDAndUpgradeEndpoints(t *testing.T) {
 		t.Fatal(e)
 	}
 	xkvRun(t, "", "export", b, "--out", ex)
-	if _, e, code := xkvRun(t, "", "import", a, ex, "--reason", "s"); code != 1 || !strings.Contains(e, "new-id") {
+	if _, e, code := xkvRun(t, "", "import", a, ex); code != 1 || !strings.Contains(e, "new-id") {
 		t.Fatalf("import from a copy: %d %s", code, e)
 	}
 	if out, e, code := xkvRun(t, "", "new-id", b, "--keep-through", "1"); code != 0 || !strings.Contains(out, "store id") {
 		t.Fatalf("new-id: %d %s %s", code, out, e)
 	}
 	xkvRun(t, "", "export", b, "--out", ex)
-	if out, e, code := xkvRun(t, "", "import", a, ex, "--reason", "s"); code != 0 || !strings.Contains(out, "1 imported") {
+	if out, e, code := xkvRun(t, "", "import", a, ex); code != 0 || !strings.Contains(out, "1 imported") {
 		t.Fatalf("import after new-id: %d %s %s", code, out, e)
 	}
 

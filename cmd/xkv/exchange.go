@@ -68,7 +68,7 @@ func cmdExport(args []string, stdout, stderr io.Writer) error {
 }
 
 func cmdImport(args []string, stdin io.Reader, stdout io.Writer) error {
-	p, err := parseArgs(args, flagSpec{"reason": false, "actor": false, "ref": false, "conflicts": false, "relaxed": true, "json": true})
+	p, err := parseArgs(args, flagSpec{"conflicts": false, "json": true})
 	if err != nil {
 		return usageError{err.Error()}
 	}
@@ -79,9 +79,6 @@ func cmdImport(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return usageError{err.Error()}
 	}
-	if p.str("reason") == "" && !p.bools["relaxed"] {
-		return xkv.ErrNoReason
-	}
 	var in io.Reader = stdin
 	if p.pos[1] != "-" {
 		f, err := os.Open(p.pos[1])
@@ -91,21 +88,11 @@ func cmdImport(args []string, stdin io.Reader, stdout io.Writer) error {
 		defer f.Close()
 		in = f
 	}
-	var opts []xkv.WriteOption
-	if p.has("reason") {
-		opts = append(opts, xkv.Reason(p.str("reason")))
-	}
-	if p.has("actor") {
-		opts = append(opts, xkv.Actor(p.str("actor")))
-	}
-	if p.has("ref") {
-		opts = append(opts, xkv.Ref(p.str("ref")))
-	}
-	db, err := xkv.Open(p.pos[0], &xkv.Options{Relaxed: p.bools["relaxed"], DefaultActor: defaultActor()})
+	db, err := xkv.Open(p.pos[0], nil)
 	if err != nil {
 		return err
 	}
-	rep, err := db.Import(context.Background(), in, xkv.ImportOptions{Conflicts: pol}, opts...)
+	rep, err := db.Import(context.Background(), in, xkv.ImportOptions{Conflicts: pol})
 	if cerr := db.Close(); err == nil {
 		err = cerr
 	}
@@ -118,7 +105,7 @@ func cmdImport(args []string, stdin io.Reader, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "from store %s, r%d to r%d: %d imported, %d older ones kept as history, %d already here, %d changed alike on both sides\n",
 		rep.Store, rep.Since, rep.Through, rep.Imported, rep.Context, rep.Skipped, rep.Agreed)
 	for _, c := range rep.Conflicts {
-		fmt.Fprintf(stdout, "conflict on %s: ours r%d, theirs r%d, kept %s in r%d\n", c.Key, c.Ours, c.Theirs, c.Kept, c.Resolution)
+		fmt.Fprintf(stdout, "conflict on %s: ours r%d, theirs r%d; %s is the value, the other is in its history\n", c.Key, c.Ours, c.Theirs, c.Kept)
 	}
 	fmt.Fprintf(stdout, "next export from that store: --since %d\n", rep.Through)
 	return nil
@@ -161,8 +148,8 @@ func cmdNewID(args []string, stdout io.Writer) error {
 	if err != nil {
 		return usageError{err.Error()}
 	}
-	if len(p.pos) != 1 {
-		return usagef("want FILE")
+	if len(p.pos) != 1 || !p.has("keep-through") {
+		return usagef("want FILE --keep-through REV: the last revision the copy shares with the original (the store's last revision when it was copied). It can't be undone")
 	}
 	if _, err := os.Stat(p.pos[0]); err != nil {
 		return err
@@ -172,12 +159,10 @@ func cmdNewID(args []string, stdout io.Writer) error {
 		return err
 	}
 	before, _ := db.Stats()
-	keep := before.LastRev
-	if p.has("keep-through") {
-		if keep, err = parseRev(p.str("keep-through")); err != nil {
-			db.Close()
-			return err
-		}
+	keep, err := parseRev(p.str("keep-through"))
+	if err != nil {
+		db.Close()
+		return err
 	}
 	err = db.NewStoreID(context.Background(), keep)
 	after, _ := db.Stats()

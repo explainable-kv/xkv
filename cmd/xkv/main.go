@@ -36,9 +36,9 @@ Usage:
   xkv compact FILE [--keep N] [--keep-days DAYS]
   xkv repair FILE                                 trim a damaged end, keeping a copy
   xkv export FILE [--since REV] [--out PATH]      changes since REV, for another store
-  xkv import FILE EXCHANGE --reason TEXT [--conflicts newest|ours|theirs] [--actor NAME] [--ref REF]
+  xkv import FILE EXCHANGE [--conflicts newest|ours|theirs]   (- reads standard input)
   xkv upgrade FILE                                rewrite a 0.1 store as file format 2
-  xkv new-id FILE [--keep-through REV]            a new store id, for a copy of a store file
+  xkv new-id FILE --keep-through REV              a new store id, for a copy of a store file
   xkv serve FILE [--addr 127.0.0.1:7070] [--relaxed]
   xkv version
 

@@ -29,11 +29,14 @@ const (
 	recRevision = 1
 	recCommit   = 2
 
-	flagDeleted    = 1
-	flagOrigin     = 2 // the revision was imported; its first identity follows the causes
-	flagHistory    = 4 // kept for the record (an imported cause); never a key's current value
-	flagResolution = 8 // written by an import to settle a conflict
-	flagsAll       = flagDeleted | flagOrigin | flagHistory | flagResolution
+	flagDeleted = 1
+	flagOrigin  = 2 // the revision was imported; its first identity follows the causes
+	flagHistory = 4 // kept for the record (an imported cause); never a key's current value
+	flagSeen    = 8 // a seen list follows: what the writer had seen of the key from other stores
+	flagsAll    = flagDeleted | flagOrigin | flagHistory | flagSeen
+
+	// maxSeen caps the stores a seen list may name.
+	maxSeen = 4096
 )
 
 // Limits on what one write may hold.
@@ -159,19 +162,19 @@ func decodeHeader(b []byte) (header, error) {
 
 // rec is a decoded revision record.
 type rec struct {
-	rev        uint64
-	tx         uint64
-	deleted    bool
-	time       int64
-	key        string
-	value      []byte
-	actor      string
-	reason     string
-	ref        string
-	causes     []CauseRef
-	history    bool   // flagHistory
-	resolution bool   // flagResolution
-	origin     *ident // flagOrigin: where an imported revision was first written
+	rev     uint64
+	tx      uint64
+	deleted bool
+	time    int64
+	key     string
+	value   []byte
+	actor   string
+	reason  string
+	ref     string
+	causes  []CauseRef
+	history bool        // flagHistory
+	origin  *ident      // flagOrigin: where an imported revision was first written
+	seen    []seenEntry // flagSeen: what its writer had seen of the key, ascending by store
 }
 
 type commit struct {
@@ -221,8 +224,8 @@ func encodeRev(r *rec) []byte {
 	if r.history {
 		flags |= flagHistory
 	}
-	if r.resolution {
-		flags |= flagResolution
+	if len(r.seen) > 0 {
+		flags |= flagSeen
 	}
 	b = append(b, flags)
 	b = binary.AppendVarint(b, r.time)
@@ -239,6 +242,13 @@ func encodeRev(r *rec) []byte {
 	if r.origin != nil {
 		b = append(b, r.origin.store[:]...)
 		b = binary.AppendUvarint(b, r.origin.rev)
+	}
+	if len(r.seen) > 0 {
+		b = binary.AppendUvarint(b, uint64(len(r.seen)))
+		for _, e := range r.seen {
+			b = append(b, e.store[:]...)
+			b = binary.AppendUvarint(b, e.rev)
+		}
 	}
 	return b
 }
@@ -334,7 +344,7 @@ func decodeRev(body []byte) (*rec, error) {
 	flags := d.byte1()
 	r.deleted = flags&flagDeleted != 0
 	r.history = flags&flagHistory != 0
-	r.resolution = flags&flagResolution != 0
+
 	r.time = d.varint()
 	r.key = d.str(MaxKeySize)
 	r.value = append([]byte(nil), d.bytes(MaxValueSize)...)
@@ -362,6 +372,25 @@ func decodeRev(body []byte) (*rec, error) {
 			return nil, errBadRecord
 		}
 		r.origin = o
+	}
+	if flags&flagSeen != 0 && !d.err {
+		n := d.uvarint()
+		if n == 0 || n > maxSeen || n > uint64(len(d.b))/17 {
+			return nil, errBadRecord
+		}
+		for i := uint64(0); i < n && !d.err; i++ {
+			if len(d.b) < 16 {
+				return nil, errBadRecord
+			}
+			var e seenEntry
+			copy(e.store[:], d.b[:16])
+			d.b = d.b[16:]
+			e.rev = d.uvarint()
+			if e.rev == 0 || (i > 0 && bytes.Compare(e.store[:], r.seen[i-1].store[:]) <= 0) {
+				return nil, errBadRecord
+			}
+			r.seen = append(r.seen, e)
+		}
 	}
 	if d.err || len(d.b) != 0 || flags&^flagsAll != 0 || r.rev == 0 || r.tx == 0 || r.key == "" {
 		return nil, errBadRecord

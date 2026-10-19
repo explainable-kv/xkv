@@ -104,25 +104,26 @@ func (db *DB) Revision(ctx context.Context, rev uint64) (Revision, error) {
 	return r.revision(), nil
 }
 
-// History returns key's revisions, newest first, deletes included. A limit
-// of 0 or less returns all of them.
+// History returns key's revisions, newest first, deletes included, and
+// revisions imported as history (marked History) among them. A limit of 0
+// or less returns all of them.
 func (db *DB) History(ctx context.Context, key string, limit int) ([]Revision, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if err := db.readGuard(ctx); err != nil {
 		return nil, err
 	}
-	k, ok := db.keys[key]
-	if !ok {
+	all := db.allRevs(key)
+	if len(all) == 0 {
 		return nil, ErrNotFound
 	}
-	n := len(k.revs)
+	n := len(all)
 	if limit > 0 && limit < n {
 		n = limit
 	}
 	out := make([]Revision, 0, n)
-	for i := len(k.revs) - 1; i >= 0 && len(out) < n; i-- {
-		m, _ := db.findRev(k.revs[i])
+	for i := len(all) - 1; i >= 0 && len(out) < n; i-- {
+		m, _ := db.findRev(all[i])
 		r, err := db.readRec(m)
 		if err != nil {
 			return nil, err

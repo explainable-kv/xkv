@@ -29,7 +29,7 @@ func exportT(t testing.TB, db *DB, since uint64) ([]byte, ExportStats) {
 
 func importT(t testing.TB, db *DB, data []byte, p ConflictPolicy) ImportReport {
 	t.Helper()
-	rep, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(data), ImportOptions{Conflicts: p}, Reason("sync"))
+	rep, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(data), ImportOptions{Conflicts: p})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,8 +222,8 @@ func TestExchangeContextIsHistory(t *testing.T) {
 	if _, err := b.Get(bg, "threshold"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a history revision became a value: %v", err)
 	}
-	if _, err := b.History(bg, "threshold", 0); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("a history revision is listed: %v", err)
+	if h, err := b.History(bg, "threshold", 0); err != nil || len(h) != 1 || !h[0].History {
+		t.Fatalf("the history revision should be listed, marked: %v %+v", err, h)
 	}
 	if wa, wb := canonWhy(t, a, "alert"), canonWhy(t, b, "alert"); strings.ReplaceAll(wa, ` was "10"`, "") != wb {
 		t.Fatalf("Why differs:\n%s\n%s", wa, wb)
@@ -288,20 +288,27 @@ func TestExchangeConflicts(t *testing.T) {
 			if v := put(a.Get(bg, "price")); string(v.Value) != want {
 				t.Fatalf("price %q, want %q", v.Value, want)
 			}
-			res := put(a.Revision(bg, c.Resolution))
-			if len(res.Causes) != 2 || res.Causes[0].Rev != ours.Rev || res.Causes[1].Rev != c.Theirs || !strings.Contains(res.Reason, "import conflict") || res.Actor != "sync" {
-				t.Fatalf("resolution %+v", res)
+			if c.Ours != ours.Rev || c.Kept != map[bool]string{true: "theirs", false: "ours"}[want == "12"] {
+				t.Fatalf("conflict %+v", c)
 			}
-			// Both sides are in the key's history.
+			// Both sides are in the key's history, the loser marked as
+			// history; the import wrote nothing of its own.
 			h := must[[]Revision](t)(a.History(bg, "price", 0))
 			var vals []string
 			for _, r := range h {
-				vals = append(vals, string(r.Value))
+				v := string(r.Value)
+				if r.History {
+					v += "(h)"
+				}
+				vals = append(vals, v)
 			}
-			if strings.Join(vals, ",") != want+",12,10,9" {
-				t.Fatalf("history %v", vals)
+			wantH := map[string]string{"12": "12,10,9", "10": "12(h),10,9"}[want]
+			if strings.Join(vals, ",") != wantH {
+				t.Fatalf("history %v, want %s", vals, wantH)
 			}
-			_ = theirs
+			if got := put(a.Revision(bg, c.Theirs)); got.Actor != theirs.Actor || got.Reason != theirs.Reason {
+				t.Fatalf("their revision %+v", got)
+			}
 			if p != NewestWins {
 				return
 			}
@@ -352,7 +359,7 @@ func TestExchangeRefusesBadFiles(t *testing.T) {
 	b := openT(t, tmpPath(t), nil)
 	try := func(name string, d []byte) {
 		t.Helper()
-		_, err := b.Import(bg, bytes.NewReader(d), ImportOptions{}, Reason("sync"))
+		_, err := b.Import(bg, bytes.NewReader(d), ImportOptions{})
 		if !errors.Is(err, ErrBadExchange) {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -383,10 +390,6 @@ func TestExchangeRefusesBadFiles(t *testing.T) {
 	try("after the end", append(append([]byte{}, data...), lines[1]...))
 	try("not an exchange file", []byte("hello\n"))
 
-	// A reason is needed, as for any write.
-	if _, err := b.Import(bg, bytes.NewReader(data), ImportOptions{}); !errors.Is(err, ErrNoReason) {
-		t.Fatalf("no reason: %v", err)
-	}
 	// A cause the file and the store both lack refuses the file.
 	partial, _ := exportT(t, a, 0)
 	_ = partial
@@ -475,7 +478,7 @@ func TestExchangeTwoWayConverges(t *testing.T) {
 		since := [2][2]uint64{}
 		sync := func(from, to int) ImportReport {
 			d, st := exportT(t, dbs[from], since[from][to])
-			rep, err := dbs[to].Import(WithActor(bg, "sync"), bytes.NewReader(d), ImportOptions{}, Reason("sync"))
+			rep, err := dbs[to].Import(WithActor(bg, "sync"), bytes.NewReader(d), ImportOptions{})
 			if err != nil {
 				t.Fatalf("seed %d: import from %d to %d since %d: %v", seed, from, to, since[from][to], err)
 			}
@@ -592,7 +595,7 @@ func TestExportNeedsNoWritesFromFormat2ReadOnly(t *testing.T) {
 	if st.Revisions != 5 || len(d) == 0 {
 		t.Fatalf("%+v", st)
 	}
-	if _, err := ro.Import(bg, bytes.NewReader(d), ImportOptions{}, Reason("x")); !errors.Is(err, ErrReadOnly) {
+	if _, err := ro.Import(bg, bytes.NewReader(d), ImportOptions{}); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("read-only import: %v", err)
 	}
 }
@@ -700,7 +703,7 @@ func FuzzImport(f *testing.F) {
 			t.Fatal(err)
 		}
 		must[Revision](t)(db.Put(bg, "risk:42:score", []byte("local"), Reason("local"), Actor("x")))
-		if _, err := db.Import(bg, bytes.NewReader(data), ImportOptions{}, Reason("fuzz")); err == nil {
+		if _, err := db.Import(bg, bytes.NewReader(data), ImportOptions{}); err == nil {
 			checkIndex(t, db)
 		}
 	})
@@ -774,7 +777,7 @@ func TestImportMutatedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		must[Revision](t)(db.Put(bg, "risk:42:score", []byte("local"), Reason("local"), Actor("x")))
-		_, err = db.Import(bg, bytes.NewReader(b), ImportOptions{}, Reason("mutated"))
+		_, err = db.Import(bg, bytes.NewReader(b), ImportOptions{})
 		db.Close()
 		if err == nil {
 			accepted++

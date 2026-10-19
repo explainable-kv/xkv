@@ -92,7 +92,7 @@ type writeBody struct {
 //	GET    /v1/revs/REV/why[?depth=N]
 //	GET    /v1/stats
 //	GET    /v1/export[?since=REV]     an exchange file
-//	POST   /v1/import?reason=R[&conflicts=newest|ours|theirs][&ref=REF]
+//	POST   /v1/import[?conflicts=newest|ours|theirs]
 func newHandler(db *xkv.DB) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/keys", func(w http.ResponseWriter, r *http.Request) {
@@ -266,20 +266,8 @@ func newHandler(db *xkv.DB) http.Handler {
 			fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		var opts []xkv.WriteOption
-		if q.Has("reason") {
-			opts = append(opts, xkv.Reason(q.Get("reason")))
-		}
-		actor := q.Get("actor")
-		if actor == "" {
-			actor = r.Header.Get("X-Xkv-Actor")
-		}
-		if actor == "" {
-			actor = "http"
-		}
-		opts = append(opts, xkv.Actor(actor), xkv.Ref(q.Get("ref")))
 		body := http.MaxBytesReader(w, r.Body, maxImportBody)
-		rep, err := db.Import(r.Context(), body, xkv.ImportOptions{Conflicts: pol}, opts...)
+		rep, err := db.Import(r.Context(), body, xkv.ImportOptions{Conflicts: pol})
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			fail(w, http.StatusRequestEntityTooLarge, "exchange file too large for one request")

@@ -4,6 +4,7 @@
 package xkv
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -63,7 +64,9 @@ type Options struct {
 	DefaultActor string
 
 	// Now returns the time recorded on each write. Tests set it; the
-	// default is time.Now.
+	// default is time.Now. A write is never recorded earlier than a
+	// revision of its key the store holds: if Now reads earlier, the
+	// write gets that revision's time plus a nanosecond.
 	Now func() time.Time
 }
 
@@ -97,17 +100,13 @@ type Revision struct {
 	// an imported revision names it as a cause. It never becomes its key's
 	// current value and isn't listed in the key's History.
 	History bool
-
-	// Resolution is set on a revision an import wrote to settle a
-	// conflict; its two causes are the two sides.
-	Resolution bool
 }
 
 func (r *rec) revision() Revision {
 	v := Revision{
 		Rev: r.rev, Tx: r.tx, Key: r.key, Value: r.value, Deleted: r.deleted,
 		Actor: r.actor, Reason: r.reason, Ref: r.ref, Causes: r.causes,
-		Time: time.Unix(0, r.time).UTC(), History: r.history, Resolution: r.resolution,
+		Time: time.Unix(0, r.time).UTC(), History: r.history,
 	}
 	if r.origin != nil {
 		v.Origin = r.origin.String()
@@ -134,6 +133,7 @@ type revMeta struct {
 type keyState struct {
 	name string
 	revs []uint64
+	own  uint64 // the newest revision of the key written here (not imported), 0 if none
 }
 
 func (k *keyState) latest() uint64 { return k.revs[len(k.revs)-1] }
@@ -155,8 +155,10 @@ type DB struct {
 	lastTx  uint64
 	revs    []revMeta // ascending by rev
 	keys    map[string]*keyState
-	origins map[ident]uint64    // identity of each imported revision -> its number here
-	hist    map[string][]uint64 // history revisions of each key, ascending
+	origins map[ident]uint64       // identity of each imported revision -> its number here
+	hist    map[string][]uint64    // history revisions of each key, ascending
+	keySeen map[string][]seenEntry // per key, the highest revision held from each other store
+	keyTime map[string]int64       // per key, the latest time of any revision held, history included
 	closed  bool
 	dirty   bool   // index changed since the snapshot was written
 	failed  error  // set when a write left the file in an unknown state
@@ -260,7 +262,7 @@ func OpenMemory(opts *Options) (*DB, error) {
 }
 
 func newDB(opts *Options) *DB {
-	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}, hist: map[string][]uint64{}}
+	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}, hist: map[string][]uint64{}, keySeen: map[string][]seenEntry{}, keyTime: map[string]int64{}}
 	if opts != nil {
 		db.opts = *opts
 	}
@@ -415,9 +417,17 @@ func fileMode(path string) os.FileMode {
 
 // addRev adds one committed revision to the index. Revisions arrive in
 // ascending order.
-func (db *DB) addRev(m revMeta) {
+func (db *DB) addRev(m revMeta, sl []seenEntry) {
+	if t, ok := db.keyTime[m.key]; !ok || m.time > t {
+		db.keyTime[m.key] = m.time
+	}
 	if m.origin != nil {
 		db.origins[*m.origin] = m.rev
+		db.noteSeen(m.key, *m.origin)
+	}
+	// What the revision's writer had seen, this store has now seen too.
+	for _, e := range sl {
+		db.noteSeen(m.key, ident{e.store, e.rev})
 	}
 	if !m.history {
 		k, ok := db.keys[m.key]
@@ -426,6 +436,9 @@ func (db *DB) addRev(m revMeta) {
 			db.keys[m.key] = k
 		}
 		k.revs = append(k.revs, m.rev)
+		if m.origin == nil {
+			k.own = m.rev
+		}
 		m.key = k.name
 	} else {
 		db.hist[m.key] = append(db.hist[m.key], m.rev)
@@ -458,10 +471,16 @@ func (db *DB) allRevs(key string) []uint64 {
 	return out
 }
 
+// seenEntry is one store's part of a seen list.
+type seenEntry struct {
+	store StoreID
+	rev   uint64
+}
+
 // seen is a version vector for one key: for each store, the highest number
-// among its revisions of the key that a store holds. Each store's revisions
-// of a key form one line, so the number stands for that revision and every
-// earlier one from the same store.
+// among that store's revisions of the key that are held or known. Each
+// store's revisions of a key form one line, so the number stands for that
+// revision and every earlier one from the same store.
 type seen map[StoreID]uint64
 
 func (s seen) add(id ident) {
@@ -480,17 +499,44 @@ func (s seen) covers(o seen) bool {
 	return true
 }
 
-// seenOf returns the version vector of key from the revisions numbered below
-// before (0: all). Called with mu held.
-func (db *DB) seenOf(key string, before uint64) seen {
+// list returns s without store skip, sorted by store, as a record holds it.
+func (s seen) list(skip StoreID) []seenEntry {
+	var out []seenEntry
+	for st, rev := range s {
+		if st != skip && rev > 0 {
+			out = append(out, seenEntry{st, rev})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].store[:], out[j].store[:]) < 0 })
+	return out
+}
+
+// noteSeen records that the store holds imported identity id of key.
+// Revisions written here aren't noted: this store's own line is read from
+// the key's revisions when needed, so a store that never exchanges keeps
+// nothing here. Called with mu held for writing.
+func (db *DB) noteSeen(key string, id ident) {
+	l := db.keySeen[key]
+	for i := range l {
+		if l[i].store == id.store {
+			if id.rev > l[i].rev {
+				l[i].rev = id.rev
+			}
+			return
+		}
+	}
+	db.keySeen[key] = append(l, seenEntry{id.store, id.rev})
+}
+
+// haveOf returns what the store has seen of key: every store's line it
+// holds, its own included. Called with mu held.
+func (db *DB) haveOf(key string) seen {
 	s := seen{}
-	for _, rev := range db.allRevs(key) {
-		if before != 0 && rev >= before {
-			break
-		}
-		if m, ok := db.findRev(rev); ok {
-			s.add(db.identOf(m))
-		}
+	for _, e := range db.keySeen[key] {
+		s[e.store] = e.rev
+	}
+	if k, ok := db.keys[key]; ok && k.own > 0 && db.hdr.version >= 2 {
+		s.add(ident{db.hdr.store, k.own})
 	}
 	return s
 }
@@ -540,7 +586,7 @@ type scanResult struct {
 // revision to add. It stops at the first frame that isn't intact. Whatever
 // follows that point is an uncommitted tail (cut short by a crash) unless a
 // complete transaction can be found after it, which means real damage.
-func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta)) (scanResult, error) {
+func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta, []seenEntry)) (scanResult, error) {
 	res := scanResult{end: from, lastRev: lastRev, lastTx: lastTx}
 	r := io.NewSectionReader(st, from, size-from)
 	const chunk = 1 << 20
@@ -582,6 +628,7 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 	}
 
 	var pending []revMeta
+	var pendingSeen [][]seenEntry
 	var pendingTx uint64
 	for {
 		if !fill(frameSize) {
@@ -623,6 +670,7 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 				break
 			}
 			pending = append(pending, revMeta{rev: rr.rev, tx: rr.tx, off: pos, n: uint32(total), deleted: rr.deleted, history: rr.history, time: rr.time, key: rr.key, origin: rr.origin})
+			pendingSeen = append(pendingSeen, rr.seen)
 			ok = true
 		case recCommit:
 			c, err := decodeCommit(body)
@@ -641,14 +689,15 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 			if !okGaps {
 				break
 			}
-			for _, m := range pending {
-				add(m)
+			for i, m := range pending {
+				add(m, pendingSeen[i])
 			}
 			res.lastRev = c.lastRev
 			res.lastTx = c.tx
 			res.end = pos + int64(total)
 			res.txs++
 			pending = pending[:0]
+			pendingSeen = pendingSeen[:0]
 			ok = true
 		}
 		if !ok {

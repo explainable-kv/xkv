@@ -103,6 +103,16 @@ func (db *DB) writeSnapshot() error {
 			b = binary.AppendUvarint(b, m.origin.rev)
 		}
 	}
+	// What the store has seen of each key from other stores (see seen).
+	b = binary.AppendUvarint(b, uint64(len(db.keySeen)))
+	for name, l := range db.keySeen {
+		b = appendString(b, name)
+		b = binary.AppendUvarint(b, uint64(len(l)))
+		for _, e := range l {
+			b = append(b, e.store[:]...)
+			b = binary.AppendUvarint(b, e.rev)
+		}
+	}
 	b = binary.LittleEndian.AppendUint32(b, crc32.Checksum(b, castTab))
 
 	tmp := db.path + snapshotSuffix + ".tmp"
@@ -203,6 +213,7 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 	keys := make(map[string]*keyState, nk)
 	origins := map[ident]uint64{}
 	hist := map[string][]uint64{}
+	keyTime := map[string]int64{}
 	revs := make([]revMeta, 0, nr)
 	var prev uint64
 	for i := uint64(0); i < nr && !d.err; i++ {
@@ -234,6 +245,9 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 		}
 		prev += delta
 		m := revMeta{rev: prev, tx: txid, off: off, n: uint32(n), deleted: fl&1 != 0, gap: fl&2 != 0, history: fl&4 != 0, time: t, key: name, origin: origin}
+		if kt, ok := keyTime[name]; !ok || t > kt {
+			keyTime[name] = t
+		}
 		if !m.history {
 			k, ok := keys[name]
 			if !ok {
@@ -241,6 +255,9 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 				keys[name] = k
 			}
 			k.revs = append(k.revs, prev)
+			if origin == nil {
+				k.own = prev
+			}
 			m.key = k.name
 		} else {
 			hist[name] = append(hist[name], prev)
@@ -250,12 +267,33 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 		}
 		revs = append(revs, m)
 	}
+	nks := d.uvarint()
+	if d.err || nks > uint64(len(d.b)) {
+		return 0, false
+	}
+	keySeen := make(map[string][]seenEntry, nks)
+	for i := uint64(0); i < nks && !d.err; i++ {
+		name := d.str(MaxKeySize)
+		n := d.uvarint()
+		if d.err || n == 0 || n > uint64(len(d.b))/17 {
+			return 0, false
+		}
+		l := make([]seenEntry, n)
+		for j := range l {
+			copy(l[j].store[:], d.b[:16])
+			d.b = d.b[16:]
+			l[j].rev = d.uvarint()
+		}
+		keySeen[name] = l
+	}
 	if d.err || len(d.b) != 0 || prev != lastRev && nr > 0 {
 		return 0, false
 	}
 	db.keys = keys
 	db.origins = origins
 	db.hist = hist
+	db.keyTime = keyTime
+	db.keySeen = keySeen
 	db.revs = revs
 	db.lastRev = lastRev
 	db.lastTx = lastTx

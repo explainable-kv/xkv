@@ -262,6 +262,8 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, re
 	db.keys = map[string]*keyState{}
 	db.origins = map[ident]uint64{}
 	db.hist = map[string][]uint64{}
+	db.keyTime = map[string]int64{}
+	db.keySeen = map[string][]seenEntry{}
 	db.revs = db.revs[:0:0]
 	lastRev, lastTx := db.lastRev, db.lastTx
 	size, err := db.st.Size()
