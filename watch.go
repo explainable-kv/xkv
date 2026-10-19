@@ -196,6 +196,7 @@ func (db *DB) Refresh() error {
 		db.st.Close()
 		db.file, db.st, db.hdr = n.file, n.st, n.hdr
 		db.revs, db.keys, db.origins, db.hist = n.revs, n.keys, n.origins, n.hist
+		db.keySeen, db.keyTime = n.keySeen, n.keyTime
 		db.end, db.lastRev, db.lastTx = n.end, max(db.lastRev, n.lastRev), max(db.lastTx, n.lastTx)
 		db.changed()
 		return nil
