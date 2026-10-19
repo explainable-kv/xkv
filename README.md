@@ -467,6 +467,16 @@ The numbers here come from [test/results](test/results), written by
   with a correct checksum, so its changes reached the checks behind it,
   3,592,585 times: none panicked, and every accepted file left a sound
   store.
+- **Watch under load.** {{W_WRITERS}} goroutines wrote {{W_TXS}} transactions
+  each while a watcher took them in: every one of the {{W_REVS}} revisions
+  arrived once, in order, and no transaction arrived in pieces. A stress run
+  added compaction in a loop, a prefix watcher and a read-only handle
+  following the file from outside, polling every millisecond; each watcher
+  got every revision it should, in order, through every compaction.
+- **Watching a killed writer.** {{WK_RUNS}} writer processes were killed with
+  SIGKILL while another process watched the file: all {{WK_TXS}}
+  acknowledged transactions arrived whole and in order, and nothing the
+  file doesn't hold.
 - **Format 1 stores.** A file written by xkv 0.1 opens, answers as before,
   takes writes, and upgrades to format 2 with every revision and its number
   kept.
