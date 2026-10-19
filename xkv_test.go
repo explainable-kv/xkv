@@ -43,7 +43,7 @@ func tmpPath(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "test.xkv")
 }
 
-func must[T any](t *testing.T) func(T, error) T {
+func must[T any](t testing.TB) func(T, error) T {
 	return func(v T, err error) T {
 		t.Helper()
 		if err != nil {
@@ -54,7 +54,7 @@ func must[T any](t *testing.T) func(T, error) T {
 }
 
 // chain writes the three-key example from the README.
-func chain(t *testing.T, db *DB) (cb, risk, limit Revision) {
+func chain(t testing.TB, db *DB) (cb, risk, limit Revision) {
 	t.Helper()
 	put := must[Revision](t)
 	ctx := WithActor(bg, "billing-worker")

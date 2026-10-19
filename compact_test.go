@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,15 +74,17 @@ type state struct {
 	history map[string]string
 }
 
-func capture(t testing.TB, db *DB, keepLast int) state {
+func capture(t testing.TB, db *DB, keepLast int, only ...string) state {
 	t.Helper()
 	s := state{get: map[string]string{}, why: map[string]string{}, history: map[string]string{}}
-	db.mu.RLock()
-	var keys []string
-	for k := range db.keys {
-		keys = append(keys, k)
+	keys := only
+	if len(keys) == 0 {
+		db.mu.RLock()
+		for k := range db.keys {
+			keys = append(keys, k)
+		}
+		db.mu.RUnlock()
 	}
-	db.mu.RUnlock()
 	for _, k := range keys {
 		g, err := db.Get(bg, k)
 		if err != nil && !errors.Is(err, ErrNotFound) {
@@ -233,4 +236,78 @@ func TestCompactKeepsLatestDelete(t *testing.T) {
 	if r.Rev != 3 || r.Tx != 3 {
 		t.Fatalf("numbering went back after compaction: %+v", r)
 	}
+}
+
+// TestConcurrentUse runs readers, a writer and compactions at the same time.
+// Run with -race. Readers must never see an error other than ErrNotFound,
+// and every value they read must be one that was written.
+func TestConcurrentUse(t *testing.T) {
+	db := openT(t, tmpPath(t), &Options{NoSync: true})
+	stop := make(chan struct{})
+	errs := make(chan error, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var prev Revision
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var opts []WriteOption
+			if prev.Rev > 0 {
+				opts = append(opts, Cause(prev.Key, prev.Rev))
+			}
+			r, err := db.Put(bg, fmt.Sprintf("k%d", i%20), []byte(fmt.Sprintf("v%d", i)), append(opts, Reason("w"))...)
+			if err != nil {
+				errs <- err
+				return
+			}
+			prev = r
+			if i%500 == 499 {
+				if _, err := db.Compact(bg, CompactOptions{KeepLast: 2}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}
+	}()
+	readers := make(chan struct{})
+	for g := 0; g < 4; g++ {
+		go func(g int) {
+			defer func() { readers <- struct{}{} }()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				k := fmt.Sprintf("k%d", (i+g)%20)
+				if v, err := db.Get(bg, k); err == nil && !strings.HasPrefix(string(v.Value), "v") {
+					errs <- fmt.Errorf("read %q", v.Value)
+					return
+				} else if err != nil && !errors.Is(err, ErrNotFound) {
+					errs <- err
+					return
+				}
+				if _, err := db.Why(bg, k, 8); err != nil && !errors.Is(err, ErrNotFound) {
+					errs <- err
+					return
+				}
+			}
+		}(g)
+	}
+	time.Sleep(2 * time.Second)
+	close(stop)
+	<-done
+	for g := 0; g < 4; g++ {
+		<-readers
+	}
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	st, _ := db.Stats()
+	t.Logf("2s of one writer, %d compactions and 4 readers at once: no read failed; %d revisions written", st.LastRev/500, st.LastRev)
 }

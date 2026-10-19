@@ -177,7 +177,9 @@ func (d *decoder) uvarint() uint64 {
 		return 0
 	}
 	v, n := binary.Uvarint(d.b)
-	if n <= 0 {
+	// Only the shortest encoding is accepted, so each record has exactly
+	// one byte form.
+	if n <= 0 || (n > 1 && d.b[n-1] == 0) {
 		d.err = true
 		return 0
 	}
@@ -190,7 +192,7 @@ func (d *decoder) varint() int64 {
 		return 0
 	}
 	v, n := binary.Varint(d.b)
-	if n <= 0 {
+	if n <= 0 || (n > 1 && d.b[n-1] == 0) {
 		d.err = true
 		return 0
 	}
