@@ -36,7 +36,16 @@ jobs:
         with:
           go-version: "1.27.x"
       - run: go vet ./...
-      - run: go test -count=1 -short ./...
+      - name: go test -short
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! go test -count=1 -short ./... 2>&1 | tee test-output.txt; then
+            # Put the failing lines in an annotation, readable without the log.
+            msg=$(grep -E -- '--- FAIL|_test\.go:[0-9]+|panic:|\.go:[0-9]+:|^FAIL|being used|Access is denied' test-output.txt | head -80 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=windows test failures::$msg"
+            exit 1
+          fi
 
   wasm:
     runs-on: ubuntu-latest
