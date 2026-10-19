@@ -362,7 +362,7 @@ It doesn't:
   when and where they go is up to you. Import only files from stores you
   run: a store can't check what a file claims about third stores. The HTTP mode is for localhost.
 - **scale to huge data.** The index of every revision lives in memory,
-  roughly 70 bytes per revision. Values belong in the store; big blobs
+  roughly 80 bytes per revision. Values belong in the store; big blobs
   don't.
 
 The file format is written up byte by byte in
@@ -379,7 +379,7 @@ The numbers here come from [test/results](test/results), written by
   trimmed back to the committed revisions, answered `Get` and `Why` as before,
   and the next write carried on the numbering.
 - **SIGKILL.** A writing process was killed at random moments
-  1000 times on the same file. 53,701 transactions were
+  1000 times on the same file. 45,484 transactions were
   acknowledged and none was lost; none was ever half visible; every cause in
   the file still resolved.
 - **Damage.** A flipped byte in the middle of the file is refused, not
@@ -394,34 +394,42 @@ The numbers here come from [test/results](test/results), written by
   before and no work file was left behind.
 - **Two processes.** A second writer gets `ErrLocked`; a read-only open
   works; the lock dies with the process.
-- **Exchange, both ways.** {{TW_SEEDS}} pairs of stores took random writes
+- **Exchange, both ways.** 20 pairs of stores took random writes
   on both sides, exchanged both ways at random and compacted now and then:
-  {{TW_REVS}} revisions, {{TW_CONFLICTS}} conflicts settled and
-  {{TW_AGREED}} changes both sides had made alike. Every pair settled to
+  2,045 revisions, 749 conflicts settled and
+  174 changes both sides had made alike. Every pair settled to
   the same values, and without compaction each store held every revision
-  the other did. Then {{TW_AFTER}} edits made after settling each reached
+  the other did. Then 100 edits made after settling each reached
   the other store as an ordinary change. Separate tests cover edits after
   settling under every policy with clocks an hour apart, a copied store, a
   store restored from a backup, importing again after compaction, and an
   import while the store compacts.
-- **Many stores.** {{RS_RUNS}} runs of three or four stores, linked in a
+- **Many stores.** 90 runs of three or four stores, linked in a
   ring, a star or a mesh, with clocks up to 74 minutes apart, took random
-  writes and exchanged along the links at random: {{RS_CONFLICTS}}
+  writes and exchanged along the links at random: 7,185
   conflicts settled, and every run ended with the same values on every
   store. An edit made after that reached every store with no conflict.
-- **Exchange, one way.** Over {{INC_ROUNDS}} rounds of incremental exports,
+- **A random network.** 60 runs of three to five stores took puts, deletes
+  and causes, exchanged at random, compacted, reopened with and without the
+  index snapshot, replayed old files and had imports cut part-way, with
+  clocks coarse, equal or running backwards. Every run settled to the same
+  values. A model of what each change had seen checked all 5,739 reported
+  conflicts: none was spurious, none was missed, and none was reported
+  twice.
+- **Exchange, one way.** Over 12 rounds of incremental exports,
   the importing store gave the same values and the same `Why` trees as the
   source after every round.
-- **Killed during an import.** {{KI_RUNS}} kills landed at random points of
-  an import of {{KI_REVS}} revisions with {{KI_CONFLICTS}} conflicts;
-  {{KI_PARTIAL}} of them part-way. Every time the file checked out, and
+- **Killed during an import.** 40 kills landed at random points of
+  an import of 285 revisions with 339 conflicts;
+  20 of them part-way. Every time the file checked out, and
   importing again ended with the values of a clean import and nothing
   imported twice.
-- **Bad exchange files.** An export cut at every byte, and {{MUT_RUNS}}
-  copies with a few bytes changed, dropped or added, were all refused whole,
-  with nothing written. A fuzzer rewrote exchange files and sealed them
+- **Bad exchange files.** An export cut at every byte, and 3,000
+  copies with a few bytes changed, dropped or added, were refused whole with
+  nothing written, except 3 whose change still left a valid file; those
+  imported and left a store that checks out. A fuzzer rewrote exchange files and sealed them
   with a correct checksum, so its changes reached the checks behind it,
-  {{FUZZ_IMPORT}} times: none panicked, and every accepted file left a sound
+  3,592,585 times: none panicked, and every accepted file left a sound
   store.
 - **Format 1 stores.** A file written by xkv 0.1 opens, answers as before,
   takes writes, and upgrades to format 2 with every revision and its number
@@ -429,16 +437,19 @@ The numbers here come from [test/results](test/results), written by
 - **Fuzzing.** Arbitrary bytes as a store file, as records, and as an
   exchange file never panic.
 - **A million revisions.** One million revisions over ten thousand keys were
-  written in 5.0 s with an fsync per 100-write transaction, into a 124 MB
-  file. `Get` took 2.0 µs and `Why` 16 levels deep 87 µs. The file opened in
-  181 ms with the index snapshot and 758 ms with a full scan. The index took
-  67 bytes per revision. Compacting to each key's latest took 332 ms and
+  written in 6.5 s with an fsync per 100-write transaction, into a 124 MB
+  file. `Get` took 1.5 µs and `Why` 16 levels deep 121 µs. The file opened in
+  194 ms with the index snapshot and 988 ms with a full scan. The index took
+  76 bytes per revision. Compacting to each key's latest took 935 ms and
   left 5.2 MB, keeping 33,338 older revisions because kept ones name them as
   causes.
+- **Exchange at scale.** 100,000 revisions in 1,000 transactions exported in
+  536 ms into a 24.8 MB file and imported in 1.8 s with an fsync per
+  transaction; importing the same file again skipped them all in 857 ms.
 
 Benchmarks on the same machine: a write with its fsync takes
-157 µs; without the fsync 1.8 µs; `Get` 0.76 µs;
-`Why` through a 16-revision chain 25 µs.
+159 µs; without the fsync 2.3 µs; `Get` 0.74 µs;
+`Why` through a 16-revision chain 24 µs.
 
 ## Build it yourself
 

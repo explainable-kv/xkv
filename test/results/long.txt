@@ -1,13 +1,13 @@
 # The long-history test at one million revisions (XKV_LONG=1)
-# recorded 2026-10-19 07:46 UTC with go1.24.7 linux/amd64
+# recorded 2026-10-19 11:27 UTC with go1.24.7 linux/amd64
 # Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
 # command: XKV_LONG=1 go test -count=1 -v -run TestLongHistory .
 
 === RUN   TestLongHistory
-    scale_test.go:112: 1000000 revisions over 10001 keys in 10000 transactions (100 writes each, fsync per transaction): written in 5.011s (199552 revisions/s), file 124.2 MB
-    scale_test.go:114: Get: 2.001µs on average; History of 20: 32.041µs; Why to depth 16 on the deep chain (39 nodes): 87.147µs; Why to depth 256: 2.314875ms
-    scale_test.go:116: open with the index snapshot: 181ms; open with a full scan: 758ms; the open store's index takes 67 MB of memory, 67 bytes per revision
-    scale_test.go:118: compaction keeping each key's latest: 332ms, 1000000 revisions -> 43339 (33338 kept for causes), 124.2 MB -> 5.2 MB
---- PASS: TestLongHistory (6.72s)
+    scale_test.go:113: 1000000 revisions over 10001 keys in 10000 transactions (100 writes each, fsync per transaction): written in 6.505s (153722 revisions/s), file 124.2 MB
+    scale_test.go:115: Get: 1.53µs on average; History of 20: 35.954µs; Why to depth 16 on the deep chain (39 nodes): 121.027µs; Why to depth 256: 2.440317ms
+    scale_test.go:117: open with the index snapshot: 194ms; open with a full scan: 988ms; the open store's index takes 76 MB of memory, 76 bytes per revision
+    scale_test.go:119: compaction keeping each key's latest: 935ms, 1000000 revisions -> 43339 (33338 kept for causes), 124.2 MB -> 5.2 MB
+--- PASS: TestLongHistory (9.17s)
 PASS
-ok  	github.com/explainable-kv/xkv	6.748s
+ok  	github.com/explainable-kv/xkv	9.198s
