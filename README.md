@@ -21,6 +21,7 @@ Version 0.2.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
 - [Reading the past](#reading-the-past)
 - [Compaction](#compaction)
 - [Exchange between stores](#exchange-between-stores)
+- [Watching for changes](#watching-for-changes)
 - [The xkv command](#the-xkv-command)
 - [HTTP mode](#http-mode)
 - [In the browser](#in-the-browser)
@@ -274,6 +275,33 @@ one as format 2, keeping every revision and its number, and `Export` and
 `Import` do it on their own for a writable store. xkv 0.1 can't open a
 format 2 file.
 
+## Watching for changes
+
+`Watch` hands you every revision as it commits, with its reason and
+causes, so another part of a system can react to a change and know why it
+happened: refresh a cache, tell a person, write an audit line, start a job.
+
+```go
+st, _ := db.Stats()
+err := db.Watch(ctx, xkv.WatchOptions{Since: st.LastRev, Prefix: "config/"}, func(r xkv.Revision) error {
+	log.Printf("%s = %s by %s: %s", r.Key, r.Value, r.Actor, r.Reason)
+	return nil
+})
+```
+
+- **In order, whole, once.** Revisions arrive in revision order, and only
+  after their whole transaction has committed. Pass the last revision you
+  handled as `Since` and nothing is missed or repeated across restarts.
+- **Across processes.** A read-only handle follows writes made to the same
+  file by another process, such as `xkv serve` (`Refresh` does it by hand).
+  `xkv watch FILE` prints changes as they happen; `GET /v1/watch` streams
+  them as JSON lines or Server-Sent Events.
+- **Honest about gaps.** If compaction removed revisions a watcher hadn't
+  reached, `Watch` stops with `ErrCompacted` and says which ones, instead
+  of skipping them quietly. `SkipCompacted` carries on with what's left.
+
+`fn` holds no lock, so it may read from the store and write to it.
+
 ## The xkv command
 
 | Command | Does |
@@ -293,6 +321,7 @@ format 2 file.
 | `xkv import FILE EXCHANGE [--conflicts newest\|ours\|theirs]` | add an exchange file's changes (`-` reads standard input) |
 | `xkv upgrade FILE` | rewrite a 0.1 store as file format 2 |
 | `xkv new-id FILE --keep-through REV` | give a copied store file its own store id |
+| `xkv watch FILE [--since REV \| --all] [--prefix P] [--count N]` | print revisions as they are written (new ones only by default) |
 | `xkv serve FILE [--addr HOST:PORT]` | HTTP mode |
 
 Most commands take `--json`. Writes need a reason unless `--relaxed` is

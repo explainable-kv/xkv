@@ -26,6 +26,7 @@ xkv serve settings.xkv --addr 127.0.0.1:7070
 | `GET /v1/export?since=REV` | an exchange file of the changes above REV (see [exchange.md](exchange.md)); the `X-Xkv-Through` header gives the REV for next time |
 | `POST /v1/import` | import the exchange file in the body; `conflicts=newest\|ours\|theirs` picks the policy. Answers with the import report; a failure part-way answers 500 with `"partial":true` and the report of what was done |
 | `POST /v1/upgrade` | rewrite a 0.1 store as file format 2; an export of a format 1 store answers 409 until then |
+| `GET /v1/watch?since=REV&prefix=P` | a stream of revisions as they commit; see below |
 
 Keys may contain slashes: `/v1/keys/config/db/timeout` is the key
 `config/db/timeout`. Go's HTTP router cleans paths, so keys with empty,
@@ -105,3 +106,25 @@ Errors come back as `{"error": "..."}` with these statuses:
 | 503 | the store is closed (the server is shutting down) |
 | 409 | an export of a store still in file format 1 |
 | 500 | anything else, including a store refusing writes after a failed write (reopen it). An import that failed part-way answers 500 with `"partial": true` and the report of what went in; importing again carries on |
+
+## Watching
+
+`GET /v1/watch` keeps the connection open and sends each revision as its
+transaction commits, in revision order. Parameters: `since` (send the
+revisions above this number; leave it out for new ones only), `prefix`, and
+`all=1` (from the start, skipping what compaction removed).
+
+By default the body is JSON lines (`application/x-ndjson`): one revision,
+as above, per line. An empty line now and then is a keep-alive. With
+`Accept: text/event-stream` it is Server-Sent Events instead, each revision
+an event whose `id` is its revision number, with a `: keep-alive` comment
+every 15 seconds; a browser's `EventSource` can read it.
+
+The stream starts at once. If revisions above `since` were removed by
+compaction before they could be sent, it ends with an `{"error": "..."}`
+line (or an `error` event). A client that reconnects with the last
+revision it received as `since` misses nothing.
+
+```sh
+curl -N 'localhost:7070/v1/watch?prefix=config/'
+```
