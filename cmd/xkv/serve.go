@@ -16,6 +16,8 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,7 +45,12 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 		db.Close()
 		return err
 	}
-	srv := &http.Server{Handler: newHandler(db), ReadHeaderTimeout: 10 * time.Second}
+	// Streams (/v1/watch) run until their client leaves; shutting down
+	// cancels the context they run under, so they end at once.
+	base, cancelBase := context.WithCancel(context.Background())
+	defer cancelBase()
+	srv := &http.Server{Handler: newHandler(db), ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return base }}
+	srv.RegisterOnShutdown(cancelBase)
 	fmt.Fprintf(stdout, "xkv %s serving %s on http://%s\n", xkv.Version, p.pos[0], ln.Addr())
 
 	done := make(chan struct{})
@@ -93,6 +100,7 @@ type writeBody struct {
 //	GET    /v1/stats
 //	GET    /v1/export[?since=REV]     an exchange file
 //	POST   /v1/import[?conflicts=newest|ours|theirs]
+//	GET    /v1/watch[?since=REV][&prefix=P][&all=1]  a stream of revisions
 func newHandler(db *xkv.DB) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/keys", func(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +239,9 @@ func newHandler(db *xkv.DB) http.Handler {
 			"format": s.Format, "store_id": s.StoreID,
 		}, err)
 	})
+	mux.HandleFunc("GET /v1/watch", func(w http.ResponseWriter, r *http.Request) {
+		serveWatch(db, w, r)
+	})
 	mux.HandleFunc("GET /v1/export", func(w http.ResponseWriter, r *http.Request) {
 		var opts xkv.ExportOptions
 		if s := r.URL.Query().Get("since"); s != "" {
@@ -330,4 +341,98 @@ func fail(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// serveWatch streams revisions as they commit: one JSON object per line
+// (application/x-ndjson), or Server-Sent Events when the client asks for
+// text/event-stream. The stream starts at once; an error (such as
+// revisions compacted away before the watch reached them) ends it with an
+// {"error": ...} line, or an "error" event.
+func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	opts := xkv.WatchOptions{Prefix: q.Get("prefix")}
+	switch {
+	case q.Get("all") == "1" || q.Get("all") == "true":
+		opts.SkipCompacted = true
+	case q.Get("since") != "":
+		v, err := strconv.ParseUint(q.Get("since"), 10, 64)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "since takes a revision number")
+			return
+		}
+		opts.Since = v
+	default:
+		st, err := db.Stats()
+		if err != nil {
+			reply(w, nil, err)
+			return
+		}
+		opts.Since = st.LastRev
+	}
+	sse := strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	flusher, _ := w.(http.Flusher)
+	var mu sync.Mutex
+	// The stream starts at once, so a client knows it is connected; then
+	// a keep-alive every 15 seconds while nothing happens.
+	if sse {
+		w.Header().Set("Content-Type", "text/event-stream")
+	} else {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				mu.Lock()
+				if sse {
+					io.WriteString(w, ": keep-alive\n\n")
+				} else {
+					io.WriteString(w, "\n")
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+	err := db.Watch(ctx, opts, func(rev xkv.Revision) error {
+		b, err := json.Marshal(rev)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if sse {
+			_, err = fmt.Fprintf(w, "id: %d\ndata: %s\n\n", rev.Rev, b)
+		} else {
+			_, err = w.Write(append(b, '\n'))
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return err
+	})
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	b, _ := json.Marshal(map[string]string{"error": err.Error()})
+	mu.Lock()
+	defer mu.Unlock()
+	if sse {
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", b)
+	} else {
+		w.Write(append(b, '\n'))
+	}
 }

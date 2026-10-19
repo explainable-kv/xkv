@@ -162,6 +162,7 @@ type DB struct {
 	hist    map[string][]uint64    // history revisions of each key, ascending
 	keySeen map[string][]seenEntry // per key, the highest revision held from each other store
 	keyTime map[string]int64       // per key, the latest time of any revision held, history included
+	notify  chan struct{}          // closed and replaced on every change, to wake Watch
 	closed  bool
 	dirty   bool   // index changed since the snapshot was written
 	failed  error  // set when a write left the file in an unknown state
@@ -265,7 +266,7 @@ func OpenMemory(opts *Options) (*DB, error) {
 }
 
 func newDB(opts *Options) *DB {
-	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}, hist: map[string][]uint64{}, keySeen: map[string][]seenEntry{}, keyTime: map[string]int64{}}
+	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}, hist: map[string][]uint64{}, keySeen: map[string][]seenEntry{}, keyTime: map[string]int64{}, notify: make(chan struct{})}
 	if opts != nil {
 		db.opts = *opts
 	}
@@ -887,6 +888,7 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
+	db.changed()
 	if db.path != "" && !db.opts.ReadOnly && db.dirty && db.failed == nil {
 		db.writeSnapshot() // best effort: a missing snapshot only means a slower open
 	}

@@ -19,8 +19,18 @@ globalThis.xkvReady = () => {
   if (!why.ok || why.ok.causes[0].revision.key !== 'chargeback:cb_991') fail('why: ' + JSON.stringify(why));
   const strict = p(x.put('a', 'b', '', 'me', ''));
   if (!strict.error) fail('a write without a reason was accepted');
-  console.log('wasm smoke passed: xkv ' + x.version);
-  process.exit(0);
+  // Watch: the two revisions so far, then one written after it began.
+  const seen = [];
+  if (!p(x.watch(0, (r) => seen.push(JSON.parse(r)))).ok) fail('watch');
+  setTimeout(() => {
+    p(x.put('account:42:limit', '50', 'risk policy v3', 'limits-service', '[{"key":"risk:42:score","rev":0}]'));
+    setTimeout(() => {
+      const keys = seen.map((r) => r.key).join(',');
+      if (keys !== 'chargeback:cb_991,risk:42:score,account:42:limit') fail('watch saw ' + keys);
+      console.log('wasm smoke passed: xkv ' + x.version);
+      process.exit(0);
+    }, 50);
+  }, 50);
 };
 WebAssembly.instantiate(fs.readFileSync(process.argv[3]), go.importObject)
   .then((r) => go.run(r.instance))

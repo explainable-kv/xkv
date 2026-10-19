@@ -473,6 +473,7 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 	db.lastRev = tx.recs[len(tx.recs)-1].rev
 	db.lastTx = tx.txid
 	db.dirty = true
+	db.changed()
 	db.mu.Unlock()
 	return out, nil
 }

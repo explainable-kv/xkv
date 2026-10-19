@@ -308,6 +308,7 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, re
 	st.RevisionsAfter = len(db.revs)
 	st.BytesAfter = db.end
 	db.dirty = true
+	db.changed()
 	if db.path != "" {
 		db.writeSnapshot()
 	}

@@ -4,14 +4,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/explainable-kv/xkv"
 )
@@ -408,4 +411,134 @@ func TestNewIDAndUpgradeEndpoints(t *testing.T) {
 	if resp, _ := http.Get(srv.URL + "/v1/export"); resp.StatusCode != 200 {
 		t.Fatalf("export after upgrade: %d", resp.StatusCode)
 	}
+}
+
+func TestWatchCommand(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "w.xkv")
+	for i := 0; i < 3; i++ {
+		if _, e, code := xkvRun(t, "", "put", f, fmt.Sprintf("config/k%d", i), "v", "--reason", "r", "--actor", "ops"); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	out, e, code := xkvRun(t, "", "watch", f, "--since", "1", "--count", "2")
+	if code != 0 || strings.Count(out, "\n") != 2 || !strings.Contains(out, "config/k1") || !strings.Contains(out, "config/k2") {
+		t.Fatalf("watch: %d %q %s", code, out, e)
+	}
+	out, _, code = xkvRun(t, "", "watch", f, "--all", "--count", "1", "--json", "--prefix", "config/k2")
+	var r xkv.Revision
+	if code != 0 || json.Unmarshal([]byte(out), &r) != nil || r.Key != "config/k2" || r.Rev != 3 {
+		t.Fatalf("watch --json: %d %q", code, out)
+	}
+	// New writes from another handle reach a watch already running.
+	done := make(chan string, 1)
+	go func() {
+		out, _, _ := xkvRun(t, "", "watch", f, "--count", "1")
+		done <- out
+	}()
+	time.Sleep(300 * time.Millisecond)
+	if _, e, code := xkvRun(t, "", "put", f, "late", "1", "--reason", "after the watch began"); code != 0 {
+		t.Fatal(e)
+	}
+	select {
+	case out := <-done:
+		if !strings.Contains(out, "late") {
+			t.Fatalf("live: %q", out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch didn't see the new write")
+	}
+	if _, e, code := xkvRun(t, "", "watch", f, "--since", "1", "--all"); code != 2 {
+		t.Fatalf("both flags: %d %s", code, e)
+	}
+}
+
+func TestHTTPWatch(t *testing.T) {
+	db, err := xkv.Open(filepath.Join(t.TempDir(), "w.xkv"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(newHandler(db))
+	defer srv.Close()
+	db.Put(t.Context(), "a", []byte("1"), xkv.Reason("r"), xkv.Actor("x"))
+
+	// NDJSON from revision 0: the existing one, then a new one.
+	resp, err := http.Get(srv.URL + "/v1/watch?since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "application/x-ndjson" {
+		t.Fatalf("content type %q", resp.Header.Get("Content-Type"))
+	}
+	sc := bufio.NewScanner(resp.Body)
+	next := func() xkv.Revision {
+		t.Helper()
+		for sc.Scan() {
+			if len(bytes.TrimSpace(sc.Bytes())) == 0 {
+				continue
+			}
+			var r xkv.Revision
+			if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+				t.Fatalf("%v: %s", err, sc.Bytes())
+			}
+			return r
+		}
+		t.Fatal("stream ended")
+		return xkv.Revision{}
+	}
+	if r := next(); r.Key != "a" || r.Rev != 1 {
+		t.Fatalf("%+v", r)
+	}
+	go db.Put(t.Context(), "b", []byte("2"), xkv.Reason("r"), xkv.Actor("x"), xkv.CauseLatest("a"))
+	if r := next(); r.Key != "b" || len(r.Causes) != 1 {
+		t.Fatalf("%+v", r)
+	}
+
+	// Server-Sent Events, filtered by prefix, from now on.
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/watch?prefix=c", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+	db.Put(t.Context(), "skip", []byte("x"), xkv.Reason("r"), xkv.Actor("x"))
+	db.Put(t.Context(), "cfg", []byte("y"), xkv.Reason("r"), xkv.Actor("x"))
+	br := bufio.NewReader(resp2.Body)
+	var event []string
+	for len(event) < 2 {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l = strings.TrimSpace(l); l != "" {
+			event = append(event, l)
+		}
+	}
+	if event[0] != "id: 4" || !strings.Contains(event[1], `"key":"cfg"`) {
+		t.Fatalf("event %q", event)
+	}
+
+	// Compacted away before the watch reached it: an error line.
+	for i := 0; i < 3; i++ {
+		db.Put(t.Context(), "a", []byte(fmt.Sprint(i)), xkv.Reason("r"), xkv.Actor("x"))
+	}
+	db.Compact(t.Context(), xkv.CompactOptions{})
+	resp3, err := http.Get(srv.URL + "/v1/watch?since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	sc3 := bufio.NewScanner(resp3.Body)
+	for sc3.Scan() {
+		if strings.Contains(sc3.Text(), `"error"`) {
+			if !strings.Contains(sc3.Text(), "compaction") {
+				t.Fatalf("error line %q", sc3.Text())
+			}
+			return
+		}
+	}
+	t.Fatal("no error line for a compacted start")
 }

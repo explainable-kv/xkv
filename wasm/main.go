@@ -20,7 +20,9 @@
 //	xkv.whyRev(rev, depth)
 //	xkv.keys(prefix)
 //	xkv.stats()
-//	xkv.reset()
+//	xkv.watch(since, fn)  calls fn(revisionJSON) for every revision above since, as it commits
+//	xkv.unwatch()
+//	xkv.reset()             a new, empty store; ends the watch
 package main
 
 import (
@@ -32,6 +34,16 @@ import (
 )
 
 var db *xkv.DB
+
+// stopWatch ends the running watch, if any.
+var stopWatch context.CancelFunc
+
+func unwatch() {
+	if stopWatch != nil {
+		stopWatch()
+		stopWatch = nil
+	}
+}
 
 func result(v any, err error) any {
 	var out any
@@ -125,7 +137,31 @@ func main() {
 			s, err := db.Stats()
 			return result(map[string]any{"keys": s.Keys, "live_keys": s.LiveKeys, "revisions": s.Revisions, "last_rev": s.LastRev}, err)
 		}),
+		"watch": js.FuncOf(func(_ js.Value, a []js.Value) any {
+			if len(a) < 2 || a[1].Type() != js.TypeFunction {
+				return result(nil, xkv.ErrInvalid)
+			}
+			unwatch()
+			fn := a[1]
+			wctx, cancel := context.WithCancel(ctx)
+			stopWatch = cancel
+			store := db
+			go store.Watch(wctx, xkv.WatchOptions{Since: uint64(num(a, 0)), SkipCompacted: true}, func(r xkv.Revision) error {
+				b, err := json.Marshal(r)
+				if err != nil {
+					return err
+				}
+				fn.Invoke(string(b))
+				return nil
+			})
+			return result(true, nil)
+		}),
+		"unwatch": js.FuncOf(func(_ js.Value, a []js.Value) any {
+			unwatch()
+			return result(true, nil)
+		}),
 		"reset": js.FuncOf(func(_ js.Value, a []js.Value) any {
+			unwatch()
 			return result(true, reset())
 		}),
 	}

@@ -8,6 +8,7 @@ package xkv
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -481,4 +483,126 @@ func TestKillDuringImport(t *testing.T) {
 	}
 	t.Logf("%d kills of a process importing %d revisions in %d transactions (a clean import takes %s and settles %d conflicts): %d landed part-way, and every time the file checked out and importing again ended with the values of a clean import and no revision imported twice",
 		runs, rrep.Imported, 300, window.Round(time.Millisecond), len(rrep.Conflicts), partial)
+}
+
+// TestWatchFollowsKilledWriters watches a file read-only while writer
+// processes append to it and are killed with SIGKILL, one after another.
+// The watcher must deliver every transaction a writer reported as
+// committed, each whole, in order, and nothing else.
+func TestWatchFollowsKilledWriters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
+	}
+	runs := 20
+	if n, err := strconv.Atoi(os.Getenv("XKV_WATCH_KILLS")); err == nil && n > 0 {
+		runs = n
+	}
+	path := filepath.Join(t.TempDir(), "w.xkv")
+	// Create the file so the watcher can open it.
+	db, err := Open(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	ro, err := Open(path, &Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	var mu sync.Mutex
+	var got []Revision
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- ro.Watch(ctx, WatchOptions{Poll: 2 * time.Millisecond}, func(r Revision) error {
+			mu.Lock()
+			got = append(got, r)
+			mu.Unlock()
+			return nil
+		})
+	}()
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	var acked []ack
+	for run := 0; run < runs; run++ {
+		cmd := helper(t, "writer", path)
+		stdout, _ := cmd.StdoutPipe()
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		lines := make(chan string, 1<<16)
+		go func() {
+			sc := bufio.NewScanner(stdout)
+			for sc.Scan() {
+				lines <- sc.Text()
+			}
+			close(lines)
+		}()
+		time.Sleep(time.Duration(20+rng.Intn(80)) * time.Millisecond)
+		cmd.Process.Signal(syscall.SIGKILL)
+		cmd.Wait()
+		for l := range lines {
+			var a ack
+			if _, err := fmt.Sscanf(l, "ack %d %d %d", &a.tx, &a.first, &a.last); err == nil {
+				acked = append(acked, a)
+			}
+		}
+	}
+	if len(acked) == 0 {
+		t.Fatal("no writes")
+	}
+	last := acked[len(acked)-1].last
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		var top uint64
+		if n > 0 {
+			top = got[n-1].Rev
+		}
+		mu.Unlock()
+		if top >= last {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("watch ended: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher reached r%d, the writers acknowledged up to r%d", top, last)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	for i, r := range got {
+		if r.Rev != uint64(i+1) {
+			t.Fatalf("revision %d delivered at position %d", r.Rev, i)
+		}
+	}
+	// Every acknowledged transaction arrived whole.
+	byTx := map[uint64][]uint64{}
+	for _, r := range got {
+		byTx[r.Tx] = append(byTx[r.Tx], r.Rev)
+	}
+	for _, a := range acked {
+		revs := byTx[a.tx]
+		if len(revs) != int(a.last-a.first+1) || revs[0] != a.first {
+			t.Fatalf("transaction %d: delivered %v, acknowledged r%d to r%d", a.tx, revs, a.first, a.last)
+		}
+	}
+	// And nothing that isn't in the file.
+	final, err := Open(path, &Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer final.Close()
+	st, _ := final.Stats()
+	if uint64(len(got)) > st.LastRev {
+		t.Fatalf("delivered %d revisions, the file holds %d", len(got), st.LastRev)
+	}
+	t.Logf("%d writer processes killed with SIGKILL while a read-only handle in another process watched the file: %d acknowledged transactions, all delivered whole and in order, %d revisions in all, none that the file doesn't hold", runs, len(acked), len(got))
 }
