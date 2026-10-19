@@ -1,0 +1,162 @@
+# Every test, verbose
+# recorded 2026-10-19 07:40 UTC with go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
+# command: go test -count=1 -v ./...
+
+=== RUN   TestCompactionEquivalence
+    compact_test.go:224: 20 random workloads of 1500 writes: 30021 revisions before compaction, 15299 after, 13659 of them kept only because a kept revision names them as a cause; Get, Why and the kept History matched before and after compaction, after reopening, and after a full rescan, and every older value (GetAt at sampled revisions, the previous value in each Why node) either matched or was reported as compacted, never wrong
+--- PASS: TestCompactionEquivalence (7.20s)
+=== RUN   TestCompactKeepsOldCauses
+--- PASS: TestCompactKeepsOldCauses (0.01s)
+=== RUN   TestCompactKeepSince
+--- PASS: TestCompactKeepSince (0.01s)
+=== RUN   TestGetAtAcrossACompactionGap
+--- PASS: TestGetAtAcrossACompactionGap (0.02s)
+=== RUN   TestCompactKeepsLatestDelete
+--- PASS: TestCompactKeepsLatestDelete (0.01s)
+=== RUN   TestConcurrentUse
+    compact_test.go:394: 2s of one writer, 24 compactions and 4 readers at once: no read failed; 12000 revisions written
+--- PASS: TestConcurrentUse (2.05s)
+=== RUN   TestTornTail
+    failure_test.go:99: last transaction of 397 bytes: cut at each of its 397 byte positions and damaged at each of its 397 bytes; every open trimmed back to the 5 committed revisions, Get and Why answered as before, and the next write continued the numbering
+--- PASS: TestTornTail (2.32s)
+=== RUN   TestDamageInTheMiddleIsReported
+--- PASS: TestDamageInTheMiddleIsReported (0.01s)
+=== RUN   TestDamageUnderTheSnapshot
+--- PASS: TestDamageUnderTheSnapshot (0.01s)
+=== RUN   TestNotAnXKVFile
+--- PASS: TestNotAnXKVFile (0.00s)
+=== RUN   TestHelperProcess
+    process_test.go:38: only runs as a child process
+--- SKIP: TestHelperProcess (0.00s)
+=== RUN   TestCrashSIGKILL
+    process_test.go:209: 200 SIGKILLs at random moments in 31.62s: 17859 transactions acknowledged, 0 lost, 0 half-visible; 141 more were on disk but killed before the writer could report them; 0 kills left a torn tail (0 bytes); the file ends with 53664 revisions in 18000 transactions and every cause resolves
+--- PASS: TestCrashSIGKILL (31.63s)
+=== RUN   TestKillDuringCompaction
+    process_test.go:284: 40 kills during compaction of 20001 revisions (a full compaction takes 25ms): 21 landed before the rename, 19 after; every time Get and full-depth Why on 20 sampled keys matched the store before compaction and the check passed
+--- PASS: TestKillDuringCompaction (20.55s)
+=== RUN   TestTwoProcesses
+--- PASS: TestTwoProcesses (0.01s)
+=== RUN   TestOpenRacingCompaction
+--- PASS: TestOpenRacingCompaction (0.01s)
+=== RUN   TestSnapshotBesideARestoredFile
+--- PASS: TestSnapshotBesideARestoredFile (0.01s)
+=== RUN   TestLargeTornTailOpensFast
+    review_test.go:110: an 8 MiB torn tail was trimmed in 67ms, its bytes kept in /tmp/TestLargeTornTailOpensFast2172074737/001/test.xkv.trimmed-20261019T074110.578045171Z
+--- PASS: TestLargeTornTailOpensFast (0.30s)
+=== RUN   TestCraftedTornTailIsBounded
+--- PASS: TestCraftedTornTailIsBounded (0.23s)
+=== RUN   TestShortForeignFileIsLeftAlone
+--- PASS: TestShortForeignFileIsLeftAlone (0.00s)
+=== RUN   TestFailedSyncStopsWrites
+--- PASS: TestFailedSyncStopsWrites (0.00s)
+=== RUN   TestWhyShallowestPathShowsCauses
+--- PASS: TestWhyShallowestPathShowsCauses (0.00s)
+=== RUN   TestSideFilesKeepTheStoreMode
+--- PASS: TestSideFilesKeepTheStoreMode (0.01s)
+=== RUN   TestRevisionNumbersDontWrap
+--- PASS: TestRevisionNumbersDontWrap (0.00s)
+=== RUN   TestWhyNodeJSONRoundTrip
+--- PASS: TestWhyNodeJSONRoundTrip (0.00s)
+=== RUN   TestDamageInACompactedFile
+--- PASS: TestDamageInACompactedFile (0.03s)
+=== RUN   TestTornWriteOfAStoreFileValue
+--- PASS: TestTornWriteOfAStoreFileValue (0.01s)
+=== RUN   TestLongHistory
+    scale_test.go:112: 100000 revisions over 10000 keys in 1000 transactions (100 writes each, fsync per transaction): written in 633ms (158060 revisions/s), file 12.4 MB
+    scale_test.go:114: Get: 1.437µs on average; History of 20: 15.07µs; Why to depth 16 on the deep chain (49 nodes): 134.094µs; Why to depth 256: 2.512255ms
+    scale_test.go:116: open with the index snapshot: 17ms; open with a full scan: 68ms; the open store's index takes 8 MB of memory, 78 bytes per revision
+    scale_test.go:118: compaction keeping each key's latest: 67ms, 100000 revisions -> 16597 (6597 kept for causes), 12.4 MB -> 2.1 MB
+--- PASS: TestLongHistory (1.05s)
+=== RUN   TestPutGetReopen
+--- PASS: TestPutGetReopen (0.01s)
+=== RUN   TestStrictAndRelaxed
+--- PASS: TestStrictAndRelaxed (0.00s)
+=== RUN   TestBadCausesWriteNothing
+--- PASS: TestBadCausesWriteNothing (0.00s)
+=== RUN   TestDuplicateCausesCollapse
+--- PASS: TestDuplicateCausesCollapse (0.00s)
+=== RUN   TestTransactions
+--- PASS: TestTransactions (0.00s)
+=== RUN   TestDeleteHistoryGetAt
+--- PASS: TestDeleteHistoryGetAt (0.00s)
+=== RUN   TestWhyChain
+--- PASS: TestWhyChain (0.00s)
+=== RUN   TestWhyDiamondMarksRepeat
+--- PASS: TestWhyDiamondMarksRepeat (0.01s)
+=== RUN   TestLocking
+--- PASS: TestLocking (0.00s)
+=== RUN   TestClosed
+--- PASS: TestClosed (0.00s)
+=== RUN   TestLimits
+--- PASS: TestLimits (0.11s)
+=== RUN   TestSnapshotIsCheckedAgainstTheFile
+--- PASS: TestSnapshotIsCheckedAgainstTheFile (0.02s)
+=== RUN   TestCheck
+--- PASS: TestCheck (0.00s)
+=== RUN   TestMemoryStore
+--- PASS: TestMemoryStore (0.00s)
+=== RUN   FuzzOpen
+=== RUN   FuzzOpen/seed#0
+=== RUN   FuzzOpen/seed#1
+=== RUN   FuzzOpen/seed#2
+=== RUN   FuzzOpen/seed#3
+=== RUN   FuzzOpen/seed#4
+=== RUN   FuzzOpen/seed#5
+=== RUN   FuzzOpen/seed#6
+=== RUN   FuzzOpen/seed#7
+=== RUN   FuzzOpen/seed#8
+=== RUN   FuzzOpen/seed#9
+=== RUN   FuzzOpen/seed#10
+=== RUN   FuzzOpen/seed#11
+=== RUN   FuzzOpen/seed#12
+--- PASS: FuzzOpen (0.07s)
+    --- PASS: FuzzOpen/seed#0 (0.01s)
+    --- PASS: FuzzOpen/seed#1 (0.02s)
+    --- PASS: FuzzOpen/seed#2 (0.01s)
+    --- PASS: FuzzOpen/seed#3 (0.01s)
+    --- PASS: FuzzOpen/seed#4 (0.01s)
+    --- PASS: FuzzOpen/seed#5 (0.00s)
+    --- PASS: FuzzOpen/seed#6 (0.00s)
+    --- PASS: FuzzOpen/seed#7 (0.00s)
+    --- PASS: FuzzOpen/seed#8 (0.01s)
+    --- PASS: FuzzOpen/seed#9 (0.00s)
+    --- PASS: FuzzOpen/seed#10 (0.00s)
+    --- PASS: FuzzOpen/seed#11 (0.00s)
+    --- PASS: FuzzOpen/seed#12 (0.00s)
+=== RUN   FuzzDecode
+=== RUN   FuzzDecode/seed#0
+=== RUN   FuzzDecode/seed#1
+=== RUN   FuzzDecode/dcb6e12d06017c73
+--- PASS: FuzzDecode (0.00s)
+    --- PASS: FuzzDecode/seed#0 (0.00s)
+    --- PASS: FuzzDecode/seed#1 (0.00s)
+    --- PASS: FuzzDecode/dcb6e12d06017c73 (0.00s)
+PASS
+ok  	github.com/explainable-kv/xkv	65.733s
+=== RUN   TestCommandLine
+--- PASS: TestCommandLine (0.04s)
+=== RUN   TestParseCause
+--- PASS: TestParseCause (0.00s)
+=== RUN   TestHTTP
+--- PASS: TestHTTP (0.01s)
+=== RUN   TestRepairCommand
+--- PASS: TestRepairCommand (0.02s)
+PASS
+ok  	github.com/explainable-kv/xkv/cmd/xkv	0.071s
+=== RUN   TestExample
+--- PASS: TestExample (0.02s)
+PASS
+ok  	github.com/explainable-kv/xkv/examples/account-limit	0.021s
+=== RUN   TestExample
+--- PASS: TestExample (0.00s)
+PASS
+ok  	github.com/explainable-kv/xkv/examples/agent-setting	0.007s
+=== RUN   TestExample
+--- PASS: TestExample (0.01s)
+PASS
+ok  	github.com/explainable-kv/xkv/examples/incident-timeout	0.009s
+=== RUN   TestExample
+--- PASS: TestExample (0.01s)
+PASS
+ok  	github.com/explainable-kv/xkv/examples/price-list	0.012s

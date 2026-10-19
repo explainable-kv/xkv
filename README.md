@@ -281,7 +281,7 @@ It doesn't:
   browser) nothing stops two writers, so don't start two.
 - **replicate, sync or authenticate.** The HTTP mode is for localhost.
 - **scale to huge data.** The index of every revision lives in memory,
-  roughly 80 bytes per revision. Values belong in the store; big blobs
+  roughly 70 bytes per revision. Values belong in the store; big blobs
   don't.
 
 The file format is written up byte by byte in
@@ -294,31 +294,37 @@ The numbers here come from [test/results](test/results), written by
 `scripts/record-tests.sh` on a 2-CPU Linux machine.
 
 - **Torn writes.** The last transaction of a file was cut at each of its
-  {{TORN_BYTES}} byte positions, and damaged at each of its bytes. Every open
+  397 byte positions, and damaged at each of its bytes. Every open
   trimmed back to the committed revisions, answered `Get` and `Why` as before,
   and the next write carried on the numbering.
 - **SIGKILL.** A writing process was killed at random moments
-  {{CRASH_RUNS}} times on the same file. {{CRASH_ACKED}} transactions were
+  1000 times on the same file. 53,701 transactions were
   acknowledged and none was lost; none was ever half visible; every cause in
   the file still resolved.
 - **Damage.** A flipped byte in the middle of the file is refused, not
   trimmed, and `xkv check` points at it.
-- **Compaction.** On {{EQ_SEEDS}} random workloads, `Get`, full-depth `Why`
+- **Compaction.** On 20 random workloads, `Get`, full-depth `Why`
   and the kept history gave the same answers before and after compaction,
-  after reopening, and after a full rescan. {{EQ_CAUSE}} of the
-  {{EQ_AFTER}} kept revisions were kept only because a kept revision names
+  after reopening, and after a full rescan. 13,659 of the
+  15,299 kept revisions were kept only because a kept revision names
   them as a cause.
-- **Killed during compaction.** {{KC_RUNS}} kills landed at random points of
+- **Killed during compaction.** 40 kills landed at random points of
   a compaction; whether before or after the rename, the store answered as
   before and no work file was left behind.
 - **Two processes.** A second writer gets `ErrLocked`; a read-only open
   works; the lock dies with the process.
 - **Fuzzing.** Arbitrary bytes as a store file, and as records, never panic.
-- **A million revisions.** {{LONG}}
+- **A million revisions.** One million revisions over ten thousand keys were
+  written in 5.0 s with an fsync per 100-write transaction, into a 124 MB
+  file. `Get` took 2.0 µs and `Why` 16 levels deep 87 µs. The file opened in
+  181 ms with the index snapshot and 758 ms with a full scan. The index took
+  67 bytes per revision. Compacting to each key's latest took 332 ms and
+  left 5.2 MB, keeping 33,338 older revisions because kept ones name them as
+  causes.
 
 Benchmarks on the same machine: a write with its fsync takes
-{{BENCH_PUT}}; without the fsync {{BENCH_NOSYNC}}; `Get` {{BENCH_GET}};
-`Why` through a 16-revision chain {{BENCH_WHY}}.
+157 µs; without the fsync 1.8 µs; `Get` 0.76 µs;
+`Why` through a 16-revision chain 25 µs.
 
 ## Build it yourself
 

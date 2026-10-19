@@ -1,0 +1,11 @@
+# The fuzzers, two minutes each
+# recorded 2026-10-19 07:52 UTC with go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
+# command: go test -run ^$ -fuzz FuzzOpen -fuzztime 2m . ; go test -run ^$ -fuzz FuzzDecode -fuzztime 2m .
+
+fuzz: elapsed: 2m1s, execs: 15428 (0/sec), new interesting: 6 (total: 23)
+PASS
+ok  	github.com/explainable-kv/xkv	121.032s
+fuzz: elapsed: 2m0s, execs: 6448555 (0/sec), new interesting: 12 (total: 91)
+PASS
+ok  	github.com/explainable-kv/xkv	120.139s

@@ -1,0 +1,29 @@
+# Benchmarks, three runs each. BenchmarkPut and BenchmarkTx100 fsync every transaction
+# recorded 2026-10-19 07:56 UTC with go1.24.7 linux/amd64
+# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
+# command: go test -run ^$ -bench . -benchtime 2s -count 3 .
+
+goos: linux
+goarch: amd64
+pkg: github.com/explainable-kv/xkv
+cpu: Intel(R) Xeon(R) Processor
+BenchmarkPut-2            	   15564	    159208 ns/op
+BenchmarkPut-2            	   15594	    157965 ns/op
+BenchmarkPut-2            	   14659	    155994 ns/op
+BenchmarkPutNoSync-2      	 1000000	      2299 ns/op
+BenchmarkPutNoSync-2      	 1270158	      1824 ns/op
+BenchmarkPutNoSync-2      	 1408430	      1825 ns/op
+BenchmarkPutWithCause-2   	  956169	      2768 ns/op
+BenchmarkPutWithCause-2   	 1000000	      2448 ns/op
+BenchmarkPutWithCause-2   	  975729	      2305 ns/op
+BenchmarkTx100-2          	    6541	    337845 ns/op
+BenchmarkTx100-2          	    8140	    313879 ns/op
+BenchmarkTx100-2          	    7270	    310896 ns/op
+BenchmarkGet-2            	 3253489	       776.2 ns/op
+BenchmarkGet-2            	 3078642	       747.1 ns/op
+BenchmarkGet-2            	 3182076	       756.2 ns/op
+BenchmarkWhy-2            	   94154	     25159 ns/op
+BenchmarkWhy-2            	   88444	     25062 ns/op
+BenchmarkWhy-2            	   98265	     24420 ns/op
+PASS
+ok  	github.com/explainable-kv/xkv	60.232s
