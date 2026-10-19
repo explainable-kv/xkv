@@ -1,0 +1,6 @@
+/xkv
+/xkv.exe
+/dist/
+*.test
+*.out
+/wasm/xkv.wasm
