@@ -157,17 +157,10 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, re
 	oldStore := db.hdr.store
 	// With a new id, the revisions written after keepThrough become this
 	// store's own line; what they knew of the line before (now the old
-	// id's) goes into their seen lists. For each key: its newest revision
-	// written here up to keepThrough.
-	var shared map[string]uint64
-	if reid != nil {
-		shared = map[string]uint64{}
-		for _, m := range db.revs {
-			if m.origin == nil && m.rev <= *reid && m.rev > shared[m.key] {
-				shared[m.key] = m.rev
-			}
-		}
-	}
+	// id's, up to keepThrough) goes into their seen lists. Every revision
+	// the old id wrote up to keepThrough was this store's own, so the claim
+	// holds for every key, even one whose older revisions were compacted
+	// away.
 	var out storage
 	var tmpF *os.File
 	tmp := db.path + compactSuffix
@@ -227,12 +220,12 @@ func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool, re
 				}
 				r.origin = &ident{store: oldStore, rev: m.rev}
 				b = frame(encodeRev(r))
-			} else if reid != nil && m.origin == nil && shared[m.key] > 0 {
+			} else if reid != nil && m.origin == nil && *reid > 0 {
 				r, err := db.readRec(m)
 				if err != nil {
 					return fail(err)
 				}
-				s := seen{oldStore: shared[m.key]}
+				s := seen{oldStore: *reid}
 				for _, e := range r.seen {
 					s.add(ident{e.store, e.rev})
 				}

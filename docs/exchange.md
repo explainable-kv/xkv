@@ -187,8 +187,13 @@ backup, it is the backup's last revision. A new id can't be undone.
   as history because a revision here already supersedes it. But an export
   with a `since` past changes the importer never got sends those only as
   context, and the stores' values can then differ until the key is written
-  again. Keep one `since` per pair of stores: the `through` of the last
-  file this store imported from that one.
+  again. The difference spreads: a store holding a change only as history
+  sends it on as history, so the stores importing from it keep it that way
+  too. Keep one `since` per pair of stores: the `through` of the last file
+  this store imported from that one.
+- An import checks the time of every revision in a file, including ones it
+  already holds, against its own clock plus a year. Stores whose clocks are
+  more than a year apart can refuse each other's files.
 - Exchange files are trusted input. An import checks a file's form, its
   checksum and everything it says about revisions this store holds or
   wrote, but it can't check what a seen list says about a third store. A
