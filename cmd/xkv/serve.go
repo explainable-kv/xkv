@@ -114,8 +114,12 @@ func newHandler(db *xkv.DB) http.Handler {
 	write := func(del bool) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var b writeBody
-			body := http.MaxBytesReader(w, r.Body, 2*xkv.MaxValueSize+64<<10)
-			if err := json.NewDecoder(body).Decode(&b); err != nil && !(del && errors.Is(err, io.EOF)) {
+			// JSON escaping can grow text with control characters up to six
+			// times; base64 values grow by a third.
+			body := http.MaxBytesReader(w, r.Body, 6*xkv.MaxValueSize+1<<20)
+			dec := json.NewDecoder(body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&b); err != nil && !(del && errors.Is(err, io.EOF)) {
 				var mbe *http.MaxBytesError
 				if errors.As(err, &mbe) {
 					fail(w, http.StatusRequestEntityTooLarge, "body too large")

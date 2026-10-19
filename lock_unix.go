@@ -1,7 +1,7 @@
 // Copyright xkv.org 2026
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build unix
+//go:build unix && !solaris && !aix
 
 package xkv
 
@@ -29,13 +29,17 @@ func lockFile(f *os.File) error {
 	}
 }
 
-// replaceFile moves the compacted file over the original and returns the
-// handle for the file now at path. On Unix the rename is atomic and both
-// handles stay open across it, so the lock is never let go.
-func replaceFile(tmpF *os.File, tmp, path string, closeOld func() error) (*os.File, error) {
+// replaceFile moves the compacted file over the original. On Unix the
+// rename is atomic and both handles stay open across it, so the lock is
+// never let go. It returns the handle for the file now at path and whether
+// the swap happened. If it didn't, the old handle is returned untouched and
+// the work file is closed.
+func replaceFile(tmpF *os.File, tmp, path string, old *os.File) (*os.File, bool, error) {
 	if err := os.Rename(tmp, path); err != nil {
-		return nil, err
+		tmpF.Close()
+		return old, false, err
 	}
 	syncDir(path)
-	return tmpF, closeOld()
+	old.Close()
+	return tmpF, true, nil
 }

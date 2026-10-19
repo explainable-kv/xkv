@@ -1,0 +1,103 @@
+# HTTP mode
+
+`xkv serve FILE` opens the store for writing and serves it over HTTP with
+JSON bodies, so programs in any language can use it. It listens on
+`127.0.0.1:7070` unless `--addr` says otherwise. There is no authentication:
+keep it on localhost or behind something that checks who is calling.
+
+```sh
+xkv serve settings.xkv --addr 127.0.0.1:7070
+```
+
+## Endpoints
+
+| Method and path | Does |
+|---|---|
+| `GET /v1/keys?prefix=P` | `{"keys": [...]}`: keys that have a value, sorted |
+| `GET /v1/keys/KEY` | the key's current revision |
+| `GET /v1/keys/KEY?at=REV` | the key's revision as the store stood at REV |
+| `PUT /v1/keys/KEY` | write a value |
+| `DELETE /v1/keys/KEY` | delete the key |
+| `GET /v1/history/KEY?limit=N` | the key's revisions, newest first |
+| `GET /v1/why/KEY?depth=N` | the tree of causes behind the current value |
+| `GET /v1/revs/REV` | one revision by number |
+| `GET /v1/revs/REV/why?depth=N` | the tree behind one revision |
+| `GET /v1/stats` | counts |
+
+Keys may contain slashes: `/v1/keys/config/db/timeout` is the key
+`config/db/timeout`. Go's HTTP router cleans paths, so keys with empty,
+`.` or `..` segments (`a//b`, `a/./b`, `../x`) can't be reached over HTTP;
+use the Go package or the command for those.
+
+## Writing
+
+```sh
+curl -X PUT localhost:7070/v1/keys/config/db/timeout \
+  -H 'X-Xkv-Actor: sam@oncall' \
+  -d '{"value": "30s",
+       "reason": "stop requests timing out while the replica catches up",
+       "ref": "INC-4410",
+       "causes": [{"key": "alert:orders-db-latency"}]}'
+```
+
+| Field | Meaning |
+|---|---|
+| `value` | the value as text; required for PUT |
+| `encoding` | `"base64"` when `value` is base64-encoded bytes |
+| `reason` | why; required unless the server runs with `--relaxed` |
+| `actor` | who; else the `X-Xkv-Actor` header; else `"http"` |
+| `ref` | an outside reference |
+| `causes` | `[{"key": K, "rev": R}]`; leave out `rev` (or send 0) for the key's current revision |
+
+A DELETE takes the same body without `value`. Unknown fields are refused
+with 400, so a misspelt `"reasons"` doesn't slip through as no reason.
+
+## Revisions
+
+```json
+{
+  "rev": 3,
+  "tx": 3,
+  "key": "config/db/timeout",
+  "value": "30s",
+  "actor": "sam@oncall",
+  "reason": "stop requests timing out while the replica catches up",
+  "ref": "INC-4410",
+  "causes": [{"key": "alert:orders-db-latency", "rev": 2}],
+  "time": "2026-10-19T09:20:42.118Z"
+}
+```
+
+A value that isn't valid UTF-8 comes back base64-encoded, with
+`"encoding": "base64"`. A delete has `"deleted": true` and no value.
+
+## Why trees
+
+```json
+{
+  "revision": { ...the revision... },
+  "prev": { ...the key's revision before it, if still held... },
+  "causes": [ { "revision": ..., "prev": ..., "causes": [...] } ],
+  "prev_compacted": true,
+  "truncated": true,
+  "repeat": true
+}
+```
+
+`truncated` means the revision has causes the depth limit didn't reach.
+`repeat` means the revision appears elsewhere in the tree too; its causes
+are shown at its shallowest place. `prev_compacted` means compaction removed
+the key's revisions just before this one, so its previous value is unknown.
+
+## Errors
+
+Errors come back as `{"error": "..."}` with these statuses:
+
+| Status | When |
+|---|---|
+| 400 | missing reason, bad cause, bad JSON or parameters |
+| 404 | no such key or revision |
+| 410 | the revision was removed by compaction |
+| 413 | value or body too large |
+| 503 | the store is closed (the server is shutting down) |
+| 500 | anything else, including a store refusing writes after a failed write (reopen it) |

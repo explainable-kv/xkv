@@ -22,8 +22,11 @@ const (
 	errorLockViolation      = syscall.Errno(33)
 )
 
+// lockFile takes an exclusive lock on one byte far past any data (offset
+// 2^62). Windows locks are mandatory, so locking real bytes would block
+// other handles from reading them; the lock is only a marker.
 func lockFile(f *os.File) error {
-	var ol syscall.Overlapped
+	ol := syscall.Overlapped{OffsetHigh: 1 << 30}
 	r, _, err := procLockFileEx.Call(f.Fd(), lockfileExclusiveLock|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&ol)))
 	if r != 0 {
 		return nil
@@ -34,26 +37,30 @@ func lockFile(f *os.File) error {
 	return err
 }
 
-// replaceFile moves the compacted file over the original and returns a
-// locked handle for it. Windows can't rename a file that is open, so both
-// handles close first and the new file is opened and locked again after.
-func replaceFile(tmpF *os.File, tmp, path string, closeOld func() error) (*os.File, error) {
-	if err := tmpF.Close(); err != nil {
-		return nil, err
-	}
-	if err := closeOld(); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return nil, err
-	}
+// replaceFile moves the compacted file over the original. Windows can't
+// rename over a file that is open, so both handles close first and the file
+// at path is opened and locked again after. If the rename fails (another
+// process has the file open) the original is reopened, so the store goes on.
+// It returns the handle for the file at path and whether the swap happened;
+// a nil handle means none could be had.
+func replaceFile(tmpF *os.File, tmp, path string, old *os.File) (*os.File, bool, error) {
+	tmpF.Close()
+	old.Close()
+	renameErr := os.Rename(tmp, path)
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if err = lockFile(f); err != nil {
+			f.Close()
+			f = nil
+		}
+	} else {
+		f = nil
 	}
-	if err := lockFile(f); err != nil {
-		f.Close()
-		return nil, err
+	if renameErr != nil {
+		if f == nil {
+			return nil, false, renameErr
+		}
+		return f, false, renameErr
 	}
-	return f, nil
+	return f, true, err
 }

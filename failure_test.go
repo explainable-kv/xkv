@@ -130,18 +130,25 @@ func TestDamageInTheMiddleIsReported(t *testing.T) {
 	_ = cb
 }
 
-// TestDamageUnderTheSnapshot flips a byte in a record the snapshot covers.
-// The snapshot is trusted for offsets, so Open succeeds, but reading the
-// damaged revision reports ErrCorrupt instead of returning wrong data.
+// TestDamageUnderTheSnapshot flips a byte in a record the snapshot covers,
+// and puts the file's modification time back, so the snapshot still looks
+// current and Open trusts it. Reading the damaged revision must report
+// ErrCorrupt instead of returning wrong data. (Without the mtime trick the
+// snapshot is ignored and Open itself finds the damage.)
 func TestDamageUnderTheSnapshot(t *testing.T) {
 	path := tmpPath(t)
 	db := openT(t, path, nil)
 	chain(t, db)
 	db.Close()
+	fi, _ := os.Stat(path)
 	b, _ := os.ReadFile(path)
 	i := strings.Index(string(b), "card dispute")
 	b[i] ^= 0xff
 	os.WriteFile(path, b, 0o644)
+	if _, err := Open(path, nil); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("damage with a changed mtime: %v", err)
+	}
+	os.Chtimes(path, fi.ModTime(), fi.ModTime())
 	db = openT(t, path, nil)
 	if _, err := db.Get(bg, "chargeback:cb_991"); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("damaged revision read as %v", err)

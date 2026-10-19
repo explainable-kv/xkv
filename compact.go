@@ -71,6 +71,21 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 			revs = append(revs, m)
 		}
 	}
+	// A kept revision whose key had revisions just before it that are now
+	// dropped (or were dropped by an earlier compaction) is a gap: its
+	// previous value, and the key's value in between, are no longer known.
+	gap := map[uint64]bool{}
+	for _, k := range db.keys {
+		for i, rev := range k.revs {
+			if !keep[rev] {
+				continue
+			}
+			m, _ := db.findRev(rev)
+			if m.gap || (i > 0 && !keep[k.revs[i-1]]) {
+				gap[rev] = true
+			}
+		}
+	}
 	h, err := newHeader()
 	if err != nil {
 		db.mu.RUnlock()
@@ -82,8 +97,16 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 	if db.path == "" {
 		out = &memStorage{}
 	} else {
-		tmpF, err = os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+		mode := fileMode(db.path)
+		tmpF, err = os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
+		if err == nil {
+			err = tmpF.Chmod(mode)
+		}
 		if err != nil {
+			if tmpF != nil {
+				tmpF.Close()
+				os.Remove(tmp)
+			}
 			db.mu.RUnlock()
 			return st, err
 		}
@@ -110,6 +133,7 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 		}
 		txid := revs[i].tx
 		var count, last uint64
+		var gaps []uint64
 		for ; i < len(revs) && revs[i].tx == txid; i++ {
 			m := revs[i]
 			b := make([]byte, m.n)
@@ -122,8 +146,11 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 			w.write(b)
 			count++
 			last = m.rev
+			if gap[m.rev] {
+				gaps = append(gaps, m.rev)
+			}
 		}
-		w.write(frame(encodeCommit(commit{tx: txid, count: count, lastRev: last})))
+		w.write(frame(encodeCommit(commit{tx: txid, count: count, lastRev: last, gaps: gaps})))
 	}
 	if err := w.flush(); err != nil {
 		return fail(err)
@@ -139,23 +166,22 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 	if db.path == "" {
 		db.st = out
 	} else {
-		old := db.file
-		oldClosed := false
-		nf, err := replaceFile(tmpF, tmp, db.path, func() error { oldClosed = true; return old.Close() })
+		nf, swapped, err := replaceFile(tmpF, tmp, db.path, db.file)
 		switch {
-		case nf != nil:
-			// Swapped. An error here only means the old handle didn't
-			// close cleanly.
-		case !oldClosed:
-			// The rename didn't happen and the old file is untouched.
-			tmpF.Close()
+		case !swapped && nf != nil:
+			// The rename didn't happen; the store goes on as it was (on
+			// Windows through a handle opened again).
 			os.Remove(tmp)
-			return st, fmt.Errorf("xkv: compaction couldn't replace the file: %w", err)
-		default:
-			// Windows closes the old handle before renaming; if that went
-			// wrong this handle can't go on safely.
+			if nf != db.file {
+				db.file = nf
+				db.st = &fileStorage{nf}
+			}
+			return st, fmt.Errorf("xkv: compaction couldn't replace the file, nothing changed: %w", err)
+		case nf == nil:
+			// The old handle is gone and no new one could be had.
+			os.Remove(tmp)
 			db.closed = true
-			return st, fmt.Errorf("xkv: compaction couldn't replace the file, reopen the store: %w", err)
+			return st, fmt.Errorf("xkv: compaction couldn't finish replacing the file, reopen the store: %w", err)
 		}
 		db.file = nf
 		db.st = &fileStorage{nf}
@@ -167,11 +193,13 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 	size, err := db.st.Size()
 	if err != nil {
 		db.closed = true
+		db.st.Close()
 		return st, err
 	}
 	res, err := scan(db.st, size, headerSize, 0, 0, db.addRev)
 	if err != nil || res.end != size || res.corrupt != "" {
 		db.closed = true
+		db.st.Close()
 		if err == nil {
 			err = fmt.Errorf("%w: the compacted file doesn't read back whole", ErrCorrupt)
 		}

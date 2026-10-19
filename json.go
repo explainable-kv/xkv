@@ -79,22 +79,23 @@ func (r *Revision) UnmarshalJSON(b []byte) error {
 }
 
 type whyJSON struct {
-	Revision  revisionJSON  `json:"revision"`
-	Prev      *revisionJSON `json:"prev,omitempty"`
-	Causes    []*whyJSON    `json:"causes"`
-	Truncated bool          `json:"truncated,omitempty"`
-	Repeat    bool          `json:"repeat,omitempty"`
+	Revision      revisionJSON  `json:"revision"`
+	Prev          *revisionJSON `json:"prev,omitempty"`
+	PrevCompacted bool          `json:"prev_compacted,omitempty"`
+	Causes        []*whyJSON    `json:"causes"`
+	Truncated     bool          `json:"truncated,omitempty"`
+	Repeat        bool          `json:"repeat,omitempty"`
 }
 
 // MarshalJSON writes the node as {"revision", "prev", "causes", ...}, with
 // causes as nested nodes. The tree is converted to plain structs first and
 // encoded in one pass, so deep trees cost linear time.
-func (n *WhyNode) MarshalJSON() ([]byte, error) {
+func (n WhyNode) MarshalJSON() ([]byte, error) {
 	return json.Marshal(n.toJSON())
 }
 
 func (n *WhyNode) toJSON() *whyJSON {
-	j := &whyJSON{Revision: n.Revision.toJSON(), Causes: make([]*whyJSON, 0, len(n.Causes)), Truncated: n.Truncated, Repeat: n.Repeat}
+	j := &whyJSON{Revision: n.Revision.toJSON(), PrevCompacted: n.PrevCompacted, Causes: make([]*whyJSON, 0, len(n.Causes)), Truncated: n.Truncated, Repeat: n.Repeat}
 	if n.Prev != nil {
 		p := n.Prev.toJSON()
 		j.Prev = &p
@@ -103,4 +104,43 @@ func (n *WhyNode) toJSON() *whyJSON {
 		j.Causes = append(j.Causes, c.toJSON())
 	}
 	return j
+}
+
+// UnmarshalJSON reads what MarshalJSON writes.
+func (n *WhyNode) UnmarshalJSON(b []byte) error {
+	var j whyJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	return n.fromJSON(&j)
+}
+
+func (r *Revision) fromJSON(j revisionJSON) error {
+	b, err := json.Marshal(j)
+	if err != nil {
+		return err
+	}
+	return r.UnmarshalJSON(b)
+}
+
+func (n *WhyNode) fromJSON(j *whyJSON) error {
+	*n = WhyNode{PrevCompacted: j.PrevCompacted, Truncated: j.Truncated, Repeat: j.Repeat}
+	if err := n.Revision.fromJSON(j.Revision); err != nil {
+		return err
+	}
+	if j.Prev != nil {
+		var p Revision
+		if err := p.fromJSON(*j.Prev); err != nil {
+			return err
+		}
+		n.Prev = &p
+	}
+	for _, c := range j.Causes {
+		var cn WhyNode
+		if err := cn.fromJSON(c); err != nil {
+			return err
+		}
+		n.Causes = append(n.Causes, &cn)
+	}
+	return nil
 }

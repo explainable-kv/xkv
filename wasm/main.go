@@ -12,8 +12,8 @@
 // globalThis.xkv, whose functions take plain arguments and return JSON
 // strings: {"ok": ...} on success, {"error": "..."} on failure.
 //
-//	xkv.put(key, value, reason, actor, causesJSON)  causes: [{"key","rev"}], rev 0 = latest
-//	xkv.del(key, reason, actor, causesJSON)
+//	xkv.put(key, value, reason, actor, causesJSON, ref)  causes: [{"key","rev"}], rev 0 = latest
+//	xkv.del(key, reason, actor, causesJSON, ref)
 //	xkv.get(key)
 //	xkv.history(key, limit)
 //	xkv.why(key, depth)
@@ -61,8 +61,8 @@ func num(args []js.Value, i int) int {
 	return 0
 }
 
-func writeOpts(reason, actor, causes string) ([]xkv.WriteOption, error) {
-	opts := []xkv.WriteOption{xkv.Reason(reason), xkv.Actor(actor)}
+func writeOpts(reason, actor, causes, ref string) ([]xkv.WriteOption, error) {
+	opts := []xkv.WriteOption{xkv.Reason(reason), xkv.Actor(actor), xkv.Ref(ref)}
 	if causes != "" {
 		var cs []xkv.CauseRef
 		if err := json.Unmarshal([]byte(causes), &cs); err != nil {
@@ -93,14 +93,14 @@ func main() {
 	api := map[string]any{
 		"version": xkv.Version,
 		"put": js.FuncOf(func(_ js.Value, a []js.Value) any {
-			opts, err := writeOpts(str(a, 2), str(a, 3), str(a, 4))
+			opts, err := writeOpts(str(a, 2), str(a, 3), str(a, 4), str(a, 5))
 			if err != nil {
 				return result(nil, err)
 			}
 			return result(db.Put(ctx, str(a, 0), []byte(str(a, 1)), opts...))
 		}),
 		"del": js.FuncOf(func(_ js.Value, a []js.Value) any {
-			opts, err := writeOpts(str(a, 1), str(a, 2), str(a, 3))
+			opts, err := writeOpts(str(a, 1), str(a, 2), str(a, 3), str(a, 4))
 			if err != nil {
 				return result(nil, err)
 			}
@@ -123,7 +123,7 @@ func main() {
 		}),
 		"stats": js.FuncOf(func(_ js.Value, a []js.Value) any {
 			s, err := db.Stats()
-			return result(map[string]any{"keys": s.LiveKeys, "revisions": s.Revisions, "last_rev": s.LastRev}, err)
+			return result(map[string]any{"keys": s.Keys, "live_keys": s.LiveKeys, "revisions": s.Revisions, "last_rev": s.LastRev}, err)
 		}),
 		"reset": js.FuncOf(func(_ js.Value, a []js.Value) any {
 			return result(true, reset())

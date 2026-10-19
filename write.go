@@ -6,6 +6,7 @@ package xkv
 import (
 	"context"
 	"fmt"
+	"math"
 	"unicode/utf8"
 )
 
@@ -249,6 +250,10 @@ func checkText(name, s string, limit int) error {
 // Update runs fn in a transaction. If fn returns nil, every write it made is
 // committed together; otherwise none is. The options are defaults for every
 // write inside: a reason, an actor, a ref, and causes added to each write.
+//
+// The store has one writer at a time, so fn must not call Put, Delete,
+// Update, Compact or Close on the same store: they would wait for fn to
+// finish, forever. Reads are fine. A Tx is for the goroutine running fn.
 func (db *DB) Update(ctx context.Context, fn func(tx *Tx) error, opts ...WriteOption) error {
 	_, err := db.update(ctx, fn, opts)
 	return err
@@ -264,13 +269,19 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 	db.wmu.Lock()
 	defer db.wmu.Unlock()
 	db.mu.RLock()
-	closed, last, lastTx := db.closed, db.lastRev, db.lastTx
+	closed, last, lastTx, failed := db.closed, db.lastRev, db.lastTx, db.failed
 	db.mu.RUnlock()
 	if closed {
 		return nil, ErrClosed
 	}
 	if db.opts.ReadOnly {
 		return nil, ErrReadOnly
+	}
+	if failed != nil {
+		return nil, fmt.Errorf("%w: %v", ErrFailed, failed)
+	}
+	if last >= math.MaxUint64-MaxTxSize || lastTx >= math.MaxUint64-1 {
+		return nil, fmt.Errorf("%w: revision numbers are used up", ErrTooLarge)
 	}
 	tx := &Tx{
 		db: db, ctx: ctx, txid: lastTx + 1, nextRev: last + 1,
@@ -300,14 +311,15 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 
 	start := db.end
 	if _, err := db.st.WriteAt(buf, start); err != nil {
-		db.st.Truncate(start)
+		db.fail(err, start)
 		return nil, err
 	}
 	if !db.opts.NoSync {
 		if err := db.st.Sync(); err != nil {
-			// The write may or may not be on disk. Take it back so the
-			// file and the index agree.
-			db.st.Truncate(start)
+			// After a failed fsync nobody can say what is on disk, and a
+			// later fsync may report success over lost data. Stop writing
+			// through this handle; reopening reads back what is there.
+			db.fail(err, start)
 			return nil, err
 		}
 	}
@@ -326,6 +338,16 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 	db.dirty = true
 	db.mu.Unlock()
 	return out, nil
+}
+
+// fail marks the handle failed after a write error: no more writes go
+// through it. It tries to take the half-done write back so readers of this
+// handle and the file agree, but the next Open decides what survived.
+func (db *DB) fail(err error, start int64) {
+	db.st.Truncate(start)
+	db.mu.Lock()
+	db.failed = err
+	db.mu.Unlock()
 }
 
 // Put sets key to value and returns the new revision.

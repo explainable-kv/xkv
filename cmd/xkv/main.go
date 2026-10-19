@@ -34,6 +34,7 @@ Usage:
   xkv stats FILE [--json]
   xkv check FILE                                  read every record and cause
   xkv compact FILE [--keep N] [--keep-days DAYS]
+  xkv repair FILE                                 trim a damaged end, keeping a copy
   xkv serve FILE [--addr 127.0.0.1:7070] [--relaxed]
   xkv version
 
@@ -138,6 +139,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdCheck(rest, stdout, stderr)
 	case "compact":
 		err = cmdCompact(rest, stdout)
+	case "repair":
+		err = cmdRepair(rest, stdout)
 	case "serve":
 		err = cmdServe(rest, stdout, stderr)
 	case "version", "--version", "-v":
@@ -271,10 +274,20 @@ func openRead(path string) (*xkv.DB, error) {
 	return xkv.Open(path, &xkv.Options{ReadOnly: true})
 }
 
+// parseUint reads a non-negative whole number that fits an int on every
+// platform.
 func parseUint(name, s string) (uint64, error) {
-	v, err := strconv.ParseUint(s, 10, 64)
+	v, err := strconv.ParseUint(s, 10, 31)
 	if err != nil {
 		return 0, usagef("--%s takes a whole number, not %q", name, s)
+	}
+	return v, nil
+}
+
+func parseRev(s string) (uint64, error) {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, usagef("a revision is a whole number, not %q", s)
 	}
 	return v, nil
 }
@@ -294,7 +307,7 @@ func cmdGet(args []string, stdout io.Writer) error {
 	defer db.Close()
 	var r xkv.Revision
 	if p.has("at") {
-		at, err := parseUint("at", p.str("at"))
+		at, err := parseRev(p.str("at"))
 		if err != nil {
 			return err
 		}
@@ -360,7 +373,7 @@ func cmdRev(args []string, stdout io.Writer) error {
 	if len(p.pos) != 2 {
 		return usagef("want FILE REV")
 	}
-	rev, err := parseUint("rev", p.pos[1])
+	rev, err := parseRev(p.pos[1])
 	if err != nil {
 		return err
 	}
@@ -484,8 +497,8 @@ func cmdCompact(args []string, stdout io.Writer) error {
 	}
 	if p.has("keep-days") {
 		d, err := strconv.ParseFloat(p.str("keep-days"), 64)
-		if err != nil || d < 0 {
-			return usagef("--keep-days takes a number of days")
+		if err != nil || d < 0 || d > 100000 || d != d {
+			return usagef("--keep-days takes a number of days, up to 100000")
 		}
 		opts.KeepSince = time.Now().Add(-time.Duration(d * 24 * float64(time.Hour)))
 	}
@@ -508,6 +521,51 @@ func cmdCompact(args []string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "%d revisions -> %d (%d kept because a kept revision names them as a cause)\n%d bytes -> %d\n",
 		st.RevisionsBefore, st.RevisionsAfter, st.KeptForCauses, st.BytesBefore, st.BytesAfter)
+	return nil
+}
+
+func cmdRepair(args []string, stdout io.Writer) error {
+	p, err := parseArgs(args, flagSpec{})
+	if err != nil {
+		return usageError{err.Error()}
+	}
+	if len(p.pos) != 1 {
+		return usagef("want FILE")
+	}
+	rep, err := xkv.Check(p.pos[0])
+	if err != nil {
+		return err
+	}
+	if rep.OK() && rep.TailBytes == 0 {
+		fmt.Fprintln(stdout, "nothing to repair: every revision reads back whole and every cause resolves")
+		return nil
+	}
+	for _, pr := range rep.Problems {
+		fmt.Fprintln(stdout, "found:", pr)
+	}
+	db, err := xkv.Open(p.pos[0], &xkv.Options{Repair: true})
+	if err != nil {
+		return err
+	}
+	st, _ := db.Stats()
+	trimmed := db.Trimmed()
+	if err := db.Close(); err != nil {
+		return err
+	}
+	if trimmed != "" {
+		fmt.Fprintf(stdout, "trimmed the file after its last whole transaction; the bytes cut off are in %s\n", trimmed)
+	}
+	fmt.Fprintf(stdout, "the store now holds %d revisions, the last r%d\n", st.Revisions, st.LastRev)
+	after, err := xkv.Check(p.pos[0])
+	if err != nil {
+		return err
+	}
+	for _, pr := range after.Problems {
+		fmt.Fprintln(stdout, "still:", pr)
+	}
+	if !after.OK() {
+		return fmt.Errorf("problems remain that trimming the end can't fix")
+	}
 	return nil
 }
 

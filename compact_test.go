@@ -59,12 +59,25 @@ func randomWorkload(t testing.TB, db *DB, rng *rand.Rand, n, nkeys int) {
 	}
 }
 
-// stripPrev drops Prev from a tree. Compaction may remove a key's older
-// revisions, so Prev can become nil; everything else must stay the same.
-func stripPrev(n *WhyNode) {
+// stripPrev drops Prev from a tree and records it by revision. Compaction
+// may remove a key's older revisions, so Prev can become unknown; checkPrevs
+// holds it to that, and everything else must stay the same.
+func stripPrev(n *WhyNode, prevs map[uint64]string) {
+	if prevs != nil {
+		switch {
+		case n.PrevCompacted:
+			prevs[n.Rev] = "compacted"
+		case n.Prev != nil:
+			b, _ := json.Marshal(n.Prev)
+			prevs[n.Rev] = string(b)
+		default:
+			prevs[n.Rev] = "none"
+		}
+	}
 	n.Prev = nil
+	n.PrevCompacted = false
 	for _, c := range n.Causes {
-		stripPrev(c)
+		stripPrev(c, prevs)
 	}
 }
 
@@ -72,11 +85,14 @@ type state struct {
 	get     map[string]string
 	why     map[string]string
 	history map[string]string
+	prevs   map[uint64]string // previous value of each revision in a Why tree
+	getAt   map[string]string // "key@rev" -> GetAt answer, at sampled revisions
 }
 
 func capture(t testing.TB, db *DB, keepLast int, only ...string) state {
 	t.Helper()
-	s := state{get: map[string]string{}, why: map[string]string{}, history: map[string]string{}}
+	s := state{get: map[string]string{}, why: map[string]string{}, history: map[string]string{}, prevs: map[uint64]string{}, getAt: map[string]string{}}
+	st, _ := db.Stats()
 	keys := only
 	if len(keys) == 0 {
 		db.mu.RLock()
@@ -96,7 +112,7 @@ func capture(t testing.TB, db *DB, keepLast int, only ...string) state {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stripPrev(w)
+		stripPrev(w, s.prevs)
 		wb, _ := json.Marshal(w)
 		s.why[k] = string(wb)
 		h, err := db.History(bg, k, keepLast)
@@ -105,6 +121,21 @@ func capture(t testing.TB, db *DB, keepLast int, only ...string) state {
 		}
 		hb, _ := json.Marshal(h)
 		s.history[k] = string(hb)
+		for rev := uint64(1); rev <= st.LastRev; rev += 1 + st.LastRev/50 {
+			g, err := db.GetAt(bg, k, rev)
+			var a string
+			switch {
+			case errors.Is(err, ErrCompacted):
+				a = "compacted"
+			case errors.Is(err, ErrNotFound):
+				a = "none"
+			case err != nil:
+				t.Fatal(err)
+			default:
+				a = fmt.Sprintf("r%d=%s", g.Rev, g.Value)
+			}
+			s.getAt[fmt.Sprintf("%s@%d", k, rev)] = a
+		}
 	}
 	return s
 }
@@ -123,6 +154,17 @@ func sameState(t *testing.T, label string, a, b state) {
 		}
 		if a.history[k] != b.history[k] {
 			t.Fatalf("%s: History(%s) differs", label, k)
+		}
+	}
+	// What compaction removed may become unknown, never different.
+	for rev, p := range a.prevs {
+		if q, ok := b.prevs[rev]; ok && q != p && q != "compacted" {
+			t.Fatalf("%s: previous value of r%d was %s, now %s", label, rev, p, q)
+		}
+	}
+	for k, v := range a.getAt {
+		if w := b.getAt[k]; w != v && w != "compacted" {
+			t.Fatalf("%s: GetAt(%s) was %s, now %s", label, k, v, w)
 		}
 	}
 }
@@ -179,7 +221,7 @@ func TestCompactionEquivalence(t *testing.T) {
 			t.Fatalf("seed %d: check after compaction: %+v %v", seed, rep, err)
 		}
 	}
-	t.Logf("%d random workloads of 1500 writes: %d revisions before compaction, %d after, %d of them kept only because a kept revision names them as a cause; Get, Why and History matched before and after compaction, after reopening, and after a full rescan",
+	t.Logf("%d random workloads of 1500 writes: %d revisions before compaction, %d after, %d of them kept only because a kept revision names them as a cause; Get, Why and the kept History matched before and after compaction, after reopening, and after a full rescan, and every older value (GetAt at sampled revisions, the previous value in each Why node) either matched or was reported as compacted, never wrong",
 		seeds, totalBefore, totalAfter, totalCause)
 }
 
@@ -221,6 +263,46 @@ func TestCompactKeepSince(t *testing.T) {
 	if st.RevisionsAfter != 4 {
 		t.Fatalf("kept %d, want the last four days", st.RevisionsAfter)
 	}
+}
+
+// TestGetAtAcrossACompactionGap is the review's case: k@1 is kept as a
+// cause, k@3 is dropped, k@4 is latest. GetAt(k, 3) must not say 100.
+func TestGetAtAcrossACompactionGap(t *testing.T) {
+	path := tmpPath(t)
+	db := openT(t, path, nil)
+	put := must[Revision](t)
+	one := put(db.Put(bg, "k", []byte("100"), Reason("start")))
+	put(db.Put(bg, "other", nil, Reason("points at k@1"), Cause("k", one.Rev)))
+	put(db.Put(bg, "k", []byte("75"), Reason("cut")))
+	put(db.Put(bg, "k", []byte("50"), Reason("cut again")))
+	must[CompactStats](t)(db.Compact(bg, CompactOptions{}))
+	check := func(label string) {
+		if _, err := db.GetAt(bg, "k", 3); !errors.Is(err, ErrCompacted) {
+			t.Fatalf("%s: GetAt(k, 3): %v", label, err)
+		}
+		// The dropped revision lies somewhere between r1 and r4, so r2 is
+		// unknown too; r1 itself is kept and certain.
+		if _, err := db.GetAt(bg, "k", 2); !errors.Is(err, ErrCompacted) {
+			t.Fatalf("%s: GetAt(k, 2): %v", label, err)
+		}
+		if v := must[Revision](t)(db.GetAt(bg, "k", 1)); string(v.Value) != "100" {
+			t.Fatalf("%s: GetAt(k, 1) answered %s", label, v.Value)
+		}
+		n := must[*WhyNode](t)(db.Why(bg, "k", 0))
+		if n.Prev != nil || !n.PrevCompacted {
+			t.Fatalf("%s: Why(k).Prev = %+v, compacted %v", label, n.Prev, n.PrevCompacted)
+		}
+	}
+	check("after compaction")
+	db.Close()
+	db = openT(t, path, nil)
+	check("after reopen")
+	db.Close()
+	os.Remove(path + snapshotSuffix)
+	db = openT(t, path, nil)
+	check("after a full rescan")
+	must[CompactStats](t)(db.Compact(bg, CompactOptions{}))
+	check("after a second compaction")
 }
 
 func TestCompactKeepsLatestDelete(t *testing.T) {

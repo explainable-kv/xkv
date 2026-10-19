@@ -46,8 +46,8 @@ func (db *DB) Get(ctx context.Context, key string) (Revision, error) {
 
 // GetAt returns key's revision as the store stood at revision rev: the
 // newest revision of key numbered rev or lower. It returns ErrNotFound if
-// the key had no value then (never written, deleted, or that part of its
-// history was compacted away).
+// the key had no value then (never written yet, or deleted), and
+// ErrCompacted if compaction removed the revisions that would answer.
 func (db *DB) GetAt(ctx context.Context, key string, rev uint64) (Revision, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -59,6 +59,14 @@ func (db *DB) GetAt(ctx context.Context, key string, rev uint64) (Revision, erro
 		return Revision{}, ErrNotFound
 	}
 	i := sort.Search(len(k.revs), func(i int) bool { return k.revs[i] > rev })
+	// Revisions of the key between the one kept before rev and the one kept
+	// after it may have been compacted away; if so, the store can't say,
+	// unless rev is the kept revision itself.
+	if i < len(k.revs) && (i == 0 || k.revs[i-1] != rev) {
+		if next, _ := db.findRev(k.revs[i]); next.gap {
+			return Revision{}, ErrCompacted
+		}
+	}
 	if i == 0 {
 		return Revision{}, ErrNotFound
 	}
@@ -146,8 +154,13 @@ func (db *DB) Keys(ctx context.Context, prefix string) ([]string, error) {
 }
 
 // prevOf returns the index entry of the revision of the same key just before
-// m, if the store still holds it.
+// m, if the store still holds it. After compaction removed the revisions
+// before m (m.gap), the one kept further back is not m's predecessor, so
+// there is no answer.
 func (db *DB) prevOf(m revMeta) (revMeta, bool) {
+	if m.gap {
+		return revMeta{}, false
+	}
 	k, ok := db.keys[m.key]
 	if !ok {
 		return revMeta{}, false

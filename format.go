@@ -13,7 +13,7 @@ import (
 )
 
 // FormatVersion is the version of the file format this package writes and
-// reads. FORMAT.md in the repository describes it byte by byte.
+// reads. docs/format.md in the repository describes it byte by byte.
 const FormatVersion = 1
 
 const (
@@ -85,6 +85,9 @@ func decodeHeader(b []byte) (header, error) {
 	if h.version != FormatVersion {
 		return h, errors.New("unsupported file format version")
 	}
+	if binary.LittleEndian.Uint16(b[6:8]) != 0 || binary.LittleEndian.Uint32(b[24:28]) != 0 {
+		return h, errors.New("header flags or reserved bytes are set")
+	}
 	copy(h.generation[:], b[8:24])
 	return h, nil
 }
@@ -107,6 +110,9 @@ type commit struct {
 	tx      uint64
 	count   uint64
 	lastRev uint64
+	// gaps lists revisions of this transaction whose key had revisions
+	// before them that compaction removed. Empty for an ordinary write.
+	gaps []uint64
 }
 
 // frame wraps a record body in its length and checksum.
@@ -162,6 +168,10 @@ func encodeCommit(c commit) []byte {
 	b = binary.AppendUvarint(b, c.tx)
 	b = binary.AppendUvarint(b, c.count)
 	b = binary.AppendUvarint(b, c.lastRev)
+	b = binary.AppendUvarint(b, uint64(len(c.gaps)))
+	for _, g := range c.gaps {
+		b = binary.AppendUvarint(b, g)
+	}
 	return b
 }
 
@@ -277,7 +287,20 @@ func decodeCommit(body []byte) (commit, error) {
 	c.tx = d.uvarint()
 	c.count = d.uvarint()
 	c.lastRev = d.uvarint()
-	if d.err || len(d.b) != 0 || c.tx == 0 || c.count == 0 || c.lastRev == 0 {
+	n := d.uvarint()
+	if d.err || c.tx == 0 || c.count == 0 || c.lastRev == 0 || n > c.count {
+		return c, errBadRecord
+	}
+	var prev uint64
+	for i := uint64(0); i < n && !d.err; i++ {
+		g := d.uvarint()
+		if g <= prev || g > c.lastRev {
+			return c, errBadRecord
+		}
+		c.gaps = append(c.gaps, g)
+		prev = g
+	}
+	if d.err || len(d.b) != 0 {
 		return c, errBadRecord
 	}
 	return c, nil
@@ -290,7 +313,7 @@ func checkFrame(b []byte) (body []byte, total int) {
 		return nil, 0
 	}
 	n := binary.LittleEndian.Uint32(b[0:4])
-	if n == 0 || n > maxRecord || int64(n) > int64(len(b)-frameSize) {
+	if n == 0 || n > maxRecord || int64(n) > int64(len(b))-frameSize {
 		return nil, 0
 	}
 	body = b[frameSize : frameSize+int(n)]

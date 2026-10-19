@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -171,6 +172,9 @@ func TestHTTP(t *testing.T) {
 	if code, _ = do("PUT", "/v1/keys/x", `{"value":"1","reason":"r","causes":[{"key":"nope","rev":9}]}`); code != 400 {
 		t.Fatalf("bad cause: %d", code)
 	}
+	if code, _ = do("PUT", "/v1/keys/x", `{"value":"1","reasons":"typo"}`); code != 400 {
+		t.Fatalf("unknown field: %d", code)
+	}
 	if code, _ = do("GET", "/v1/keys/nope", ""); code != 404 {
 		t.Fatalf("missing: %d", code)
 	}
@@ -195,5 +199,33 @@ func TestHTTP(t *testing.T) {
 	}
 	if code, m = do("GET", "/v1/stats", ""); code != 200 || m["revisions"] != 3.0 {
 		t.Fatalf("stats: %d %v", code, m)
+	}
+}
+
+func TestRepairCommand(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "r.xkv")
+	for i := 0; i < 3; i++ {
+		if _, e, code := xkvRun(t, "", "put", f, "k", "v", "--reason", "r"); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	if out, _, code := xkvRun(t, "", "repair", f); code != 0 || !strings.Contains(out, "nothing to repair") {
+		t.Fatalf("repair on a sound file: %d %s", code, out)
+	}
+	b, _ := os.ReadFile(f)
+	os.Remove(f + ".idx")
+	// Damage the first revision: whole transactions follow, so Open refuses.
+	b[40] ^= 0xff
+	os.WriteFile(f, b, 0o644)
+	if _, e, code := xkvRun(t, "", "get", f, "k"); code != 1 || !strings.Contains(e, "damaged") {
+		t.Fatalf("get on a damaged file: %d %s", code, e)
+	}
+	out, e, code := xkvRun(t, "", "repair", f)
+	if code != 0 || !strings.Contains(out, "trimmed") || !strings.Contains(out, "0 revisions") {
+		t.Fatalf("repair: %d %s %s", code, out, e)
+	}
+	matches, _ := filepath.Glob(f + ".trimmed-*")
+	if len(matches) != 1 {
+		t.Fatalf("trimmed bytes not kept: %v", matches)
 	}
 }

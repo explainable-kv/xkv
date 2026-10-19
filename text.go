@@ -38,7 +38,7 @@ func (n *WhyNode) WriteText(w io.Writer) error {
 		if len(n.Causes) > 0 {
 			bar = "│ "
 		}
-		fmt.Fprintf(w, "%s%s%s%s\n", prefix, cont, bar, textDetail(n.Revision, n.Prev, false))
+		fmt.Fprintf(w, "%s%s%s%s\n", prefix, cont, bar, textDetail(n.Revision, n.Prev, false, n.PrevCompacted))
 		switch {
 		case n.Truncated:
 			fmt.Fprintf(w, "%s%s  (%s not shown; raise --depth)\n", prefix, cont, textPlural(len(n.Revision.Causes), "cause"))
@@ -77,9 +77,11 @@ func textHead(r Revision) string {
 
 // textDetail is "was OLD · by ACTOR · REASON · ref REF", with the causes listed
 // when the caller doesn't draw them as a tree.
-func textDetail(r Revision, prev *Revision, withCauses bool) string {
+func textDetail(r Revision, prev *Revision, withCauses, prevCompacted bool) string {
 	var parts []string
-	if prev != nil {
+	if prevCompacted {
+		parts = append(parts, "earlier values compacted")
+	} else if prev != nil {
 		if prev.Deleted {
 			parts = append(parts, "was deleted")
 		} else {
@@ -132,5 +134,5 @@ func textPlural(n int, word string) string {
 // String shows the revision on one line: key and value, revision number,
 // actor, reason, ref and causes.
 func (r Revision) String() string {
-	return fmt.Sprintf("%s (r%d) · %s", textHead(r), r.Rev, textDetail(r, nil, true))
+	return fmt.Sprintf("%s (r%d) · %s", textHead(r), r.Rev, textDetail(r, nil, true, false))
 }

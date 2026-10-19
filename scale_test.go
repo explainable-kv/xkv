@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -86,9 +87,15 @@ func TestLongHistory(t *testing.T) {
 	count(depth16)
 	db.Close()
 
+	runtime.GC()
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
 	t0 = time.Now()
 	db = openT(t, path, nil)
 	openSnap := time.Since(t0)
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+	indexBytes := float64(m1.HeapAlloc) - float64(m0.HeapAlloc)
 	db.Close()
 	os.Remove(path + snapshotSuffix)
 	t0 = time.Now()
@@ -106,7 +113,8 @@ func TestLongHistory(t *testing.T) {
 		st.Revisions, st.Keys, st.LastTx, writeTime.Round(time.Millisecond), float64(st.Revisions)/writeTime.Seconds(), float64(st.FileSize)/1e6)
 	t.Logf("Get: %s on average; History of 20: %s; Why to depth 16 on the deep chain (%d nodes): %s; Why to depth 256: %s",
 		get, hist, nodes, why16, why256)
-	t.Logf("open with the index snapshot: %s; open with a full scan: %s", openSnap.Round(time.Millisecond), openScan.Round(time.Millisecond))
+	t.Logf("open with the index snapshot: %s; open with a full scan: %s; the open store's index takes %.0f MB of memory, %.0f bytes per revision",
+		openSnap.Round(time.Millisecond), openScan.Round(time.Millisecond), indexBytes/1e6, indexBytes/float64(st.Revisions))
 	t.Logf("compaction keeping each key's latest: %s, %d revisions -> %d (%d kept for causes), %.1f MB -> %.1f MB",
 		compactTime.Round(time.Millisecond), cs.RevisionsBefore, cs.RevisionsAfter, cs.KeptForCauses, float64(cs.BytesBefore)/1e6, float64(cs.BytesAfter)/1e6)
 }

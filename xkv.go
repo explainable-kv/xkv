@@ -5,6 +5,7 @@ package xkv
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,7 @@ var (
 	ErrTooLarge   = errors.New("xkv: write is too large")
 	ErrInvalid    = errors.New("xkv: invalid argument")
 	ErrTxFinished = errors.New("xkv: transaction is finished")
+	ErrFailed     = errors.New("xkv: an earlier write failed; reopen the store")
 )
 
 // Options configure Open. A nil *Options means the defaults.
@@ -45,9 +47,16 @@ type Options struct {
 	Relaxed bool
 
 	// NoSync skips the fsync after each transaction. Faster, but a power
-	// loss can lose the last transactions written. A killed process loses
-	// nothing either way.
+	// loss can lose the last transactions written, and the next open may
+	// then need Repair. A killed process loses nothing either way.
 	NoSync bool
+
+	// Repair lets a writable Open trim a file whose end is damaged rather
+	// than refuse it with ErrCorrupt. Everything after the last transaction
+	// that reads back whole is cut off, after being copied to a file beside
+	// the store (see Trimmed). Use it after `xkv check` has shown what's
+	// wrong.
+	Repair bool
 
 	// DefaultActor is recorded when neither the write nor its context names
 	// an actor. If empty, "unknown" is recorded.
@@ -95,6 +104,7 @@ type revMeta struct {
 	off     int64
 	n       uint32 // frame length, header included
 	deleted bool
+	gap     bool // compaction removed revisions of this key just before this one
 	time    int64
 	key     string
 }
@@ -125,7 +135,9 @@ type DB struct {
 	revs    []revMeta // ascending by rev
 	keys    map[string]*keyState
 	closed  bool
-	dirty   bool // index changed since the snapshot was written
+	dirty   bool   // index changed since the snapshot was written
+	failed  error  // set when a write left the file in an unknown state
+	trimmed string // where Open saved the bytes it trimmed, if it trimmed any
 }
 
 type actorKey struct{}
@@ -159,15 +171,8 @@ func Open(path string, opts *Options) (*DB, error) {
 		db.file = f
 		db.st = &fileStorage{f}
 	} else {
-		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+		f, err := openLocked(path)
 		if err != nil {
-			return nil, err
-		}
-		if err := lockFile(f); err != nil {
-			f.Close()
-			if errors.Is(err, ErrLocked) {
-				return nil, fmt.Errorf("%w: %s", ErrLocked, path)
-			}
 			return nil, err
 		}
 		db.file = f
@@ -181,6 +186,43 @@ func Open(path string, opts *Options) (*DB, error) {
 	}
 	return db, nil
 }
+
+// openLocked opens path for writing and takes its lock. Compaction replaces
+// the file with a rename; an open that raced it could end up holding the
+// lock on the old, unlinked file, and its writes would go nowhere. So after
+// locking it checks that the path still names the file it locked, and starts
+// again if not.
+func openLocked(path string) (*os.File, error) {
+	for tries := 0; ; tries++ {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		if testHookOpened != nil {
+			testHookOpened()
+		}
+		if err := lockFile(f); err != nil {
+			f.Close()
+			if errors.Is(err, ErrLocked) {
+				return nil, fmt.Errorf("%w: %s", ErrLocked, path)
+			}
+			return nil, err
+		}
+		fi, err1 := f.Stat()
+		pi, err2 := os.Stat(path)
+		if err1 == nil && err2 == nil && os.SameFile(fi, pi) {
+			return f, nil
+		}
+		f.Close()
+		if tries >= 20 {
+			return nil, fmt.Errorf("xkv: %s kept being replaced while it was opened", path)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// testHookOpened runs between opening and locking the file, in tests only.
+var testHookOpened func()
 
 // OpenMemory returns a store that lives only in memory. It behaves like a
 // file-backed store and is used by the WebAssembly demo and tests.
@@ -205,22 +247,45 @@ func newDB(opts *Options) *DB {
 	return db
 }
 
-// load reads the header and builds the index, from the snapshot when one
-// matches, then recovers the tail.
+// headerPrefix reports whether b could be the start of a header whose write
+// was cut short: all zeros, or the magic bytes as far as they go.
+func headerPrefix(b []byte) bool {
+	zero := true
+	for _, c := range b {
+		if c != 0 {
+			zero = false
+			break
+		}
+	}
+	if zero {
+		return true
+	}
+	n := min(len(b), len(magic))
+	return string(b[:n]) == string(magic[:n])
+}
+
+// load reads the header and builds the index, from the snapshot when it
+// matches the file exactly, otherwise by reading every record; then it deals
+// with whatever follows the last complete transaction.
 func (db *DB) load(useSnapshot bool) error {
 	size, err := db.st.Size()
 	if err != nil {
 		return err
 	}
 	if size < headerSize {
-		if db.opts.ReadOnly {
-			if size == 0 {
-				db.end = 0
-				return nil
+		if size > 0 {
+			b := make([]byte, size)
+			if _, err := db.st.ReadAt(b, 0); err != nil && err != io.EOF {
+				return err
 			}
-			return fmt.Errorf("%w: file is shorter than its header", ErrCorrupt)
+			if !headerPrefix(b) {
+				return fmt.Errorf("%w: not an xkv file (%d bytes, shorter than a header)", ErrCorrupt, size)
+			}
 		}
-		// New file, or one whose creation was cut short before any data.
+		if db.opts.ReadOnly {
+			return nil
+		}
+		// A new file, or one whose creation was cut short before any data.
 		h, err := newHeader()
 		if err != nil {
 			return err
@@ -252,7 +317,7 @@ func (db *DB) load(useSnapshot bool) error {
 	db.hdr = h
 
 	from := int64(headerSize)
-	if useSnapshot && db.path != "" {
+	if useSnapshot && db.path != "" && db.file != nil {
 		if off, ok := db.loadSnapshot(size); ok {
 			from = off
 		}
@@ -261,14 +326,19 @@ func (db *DB) load(useSnapshot bool) error {
 	if err != nil {
 		return err
 	}
-	if res.corrupt != "" {
-		return fmt.Errorf("%w at offset %d: %s", ErrCorrupt, res.badAt, res.corrupt)
+	if res.corrupt != "" && (db.opts.ReadOnly || !db.opts.Repair) {
+		return fmt.Errorf("%w at offset %d: %s (xkv check shows where; xkv repair trims it, keeping a copy)", ErrCorrupt, res.badAt, res.corrupt)
 	}
 	db.end = res.end
 	db.lastRev = res.lastRev
 	db.lastTx = res.lastTx
 	if res.end < size && !db.opts.ReadOnly {
-		// Trim the uncommitted tail a crash left behind.
+		// Trim what follows the last complete transaction: the part of a
+		// write a crash cut short, or, with Repair, damage. The bytes are
+		// copied aside first, so nothing is lost for good.
+		if err := db.saveTail(res.end, size); err != nil {
+			return err
+		}
 		if err := db.st.Truncate(res.end); err != nil {
 			return err
 		}
@@ -276,10 +346,52 @@ func (db *DB) load(useSnapshot bool) error {
 			return err
 		}
 	}
-	// The snapshot needs rewriting if the scan found anything it didn't
-	// cover, or if there was no snapshot to start from.
-	db.dirty = res.end > headerSize && (from == headerSize || res.end != from)
+	db.dirty = res.end > headerSize && from != res.end
 	return nil
+}
+
+// saveTail copies st[from:size] to a file beside the store before it is
+// trimmed: <path>.trimmed-<UTC time>.
+func (db *DB) saveTail(from, size int64) error {
+	if db.path == "" {
+		return nil
+	}
+	b := make([]byte, size-from)
+	if _, err := db.st.ReadAt(b, from); err != nil && err != io.EOF {
+		return err
+	}
+	name := db.path + ".trimmed-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode(db.path))
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	db.trimmed = name
+	return nil
+}
+
+// Trimmed returns the file Open copied trimmed bytes to, or "" if it didn't
+// trim anything.
+func (db *DB) Trimmed() string { return db.trimmed }
+
+// fileMode returns the permission bits of the file at path, so files written
+// beside it (the snapshot, compaction's work file, trimmed bytes) are no more
+// readable than the store itself.
+func fileMode(path string) os.FileMode {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.Mode().Perm()
+	}
+	return 0o644
 }
 
 // addRev adds one committed revision to the index. Revisions arrive in
@@ -301,7 +413,7 @@ type scanResult struct {
 	lastRev uint64
 	lastTx  uint64
 	txs     int
-	corrupt string // non-empty when damage was found before the tail
+	corrupt string // non-empty when damage was found, not just a torn end
 	badAt   int64
 }
 
@@ -317,23 +429,23 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 	bufOff := from // file offset of buf[0]
 	pos := from    // next frame
 	eof := false
+	var readErr error
 
-	fill := func(need int) bool {
+	fill := func(need int64) bool {
 		// make sure buf holds at least need bytes starting at pos
-		start := int(pos - bufOff)
-		if len(buf)-start >= need {
+		start := pos - bufOff
+		if int64(len(buf))-start >= need {
 			return true
 		}
 		if eof {
 			return false
 		}
-		// shift
 		copy(buf, buf[start:])
-		buf = buf[:len(buf)-start]
+		buf = buf[:int64(len(buf))-start]
 		bufOff = pos
-		for len(buf) < need && !eof {
+		for int64(len(buf)) < need && !eof {
 			if cap(buf)-len(buf) < chunk {
-				nb := make([]byte, len(buf), max(2*cap(buf), need+chunk))
+				nb := make([]byte, len(buf), max(int64(2*cap(buf)), need+chunk))
 				copy(nb, buf)
 				buf = nb
 			}
@@ -343,10 +455,11 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 				eof = true
 			} else if err != nil {
 				eof = true
+				readErr = err
 				return false
 			}
 		}
-		return len(buf) >= need
+		return int64(len(buf)) >= need
 	}
 
 	var pending []revMeta
@@ -355,15 +468,15 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 		if !fill(frameSize) {
 			break
 		}
-		start := int(pos - bufOff)
-		n := int(uint32(buf[start]) | uint32(buf[start+1])<<8 | uint32(buf[start+2])<<16 | uint32(buf[start+3])<<24)
-		if n == 0 || n > maxRecord || pos+int64(frameSize+n) > size {
+		start := pos - bufOff
+		n := int64(binary.LittleEndian.Uint32(buf[start : start+4]))
+		if n == 0 || n > maxRecord || pos+frameSize+n > size {
 			break
 		}
 		if !fill(frameSize + n) {
 			break
 		}
-		start = int(pos - bufOff)
+		start = pos - bufOff
 		body, total := checkFrame(buf[start : start+frameSize+n])
 		if body == nil {
 			break
@@ -397,6 +510,18 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 			if err != nil || len(pending) == 0 || c.tx != pendingTx || c.count != uint64(len(pending)) || c.lastRev != pending[len(pending)-1].rev {
 				break
 			}
+			okGaps := true
+			for _, g := range c.gaps {
+				i := sort.Search(len(pending), func(i int) bool { return pending[i].rev >= g })
+				if i == len(pending) || pending[i].rev != g {
+					okGaps = false
+					break
+				}
+				pending[i].gap = true
+			}
+			if !okGaps {
+				break
+			}
 			for _, m := range pending {
 				add(m)
 			}
@@ -412,66 +537,142 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 		}
 		pos += int64(total)
 	}
+	if readErr != nil {
+		return res, readErr
+	}
 	if res.end < size {
-		bad, err := completeTxAfter(st, res.end, size, res.lastRev, res.lastTx)
+		// Frames from res.end to pos are intact pieces of the transaction
+		// that was cut short; the search for damage starts at the break.
+		bad, err := completeTxAfter(st, pos, size, size-res.end, res.lastRev, res.lastTx)
 		if err != nil {
 			return res, err
 		}
-		if bad {
-			res.corrupt = "a damaged record is followed by intact transactions"
+		if bad != "" {
+			res.corrupt = bad
 			res.badAt = pos
 		}
 	}
 	return res, nil
 }
 
-// completeTxAfter reports whether a whole, valid transaction can be found
-// anywhere in st[from:size]. A crash only ever cuts short the transactions
-// being written last, so finding a complete one after the break means the
-// file was damaged in the middle, not torn at the end.
-func completeTxAfter(st storage, from, size int64, lastRev, lastTx uint64) (bool, error) {
+// completeTxAfter looks for a whole, valid transaction anywhere in
+// st[from:size], where from is the first frame that didn't read back. A
+// crash only cuts short what was being written last, so a complete
+// transaction after the break means the file was damaged in the middle,
+// not torn at the end. It returns why it thinks so, or "".
+//
+// Frames that read back whole are stepped over as units, so a value that
+// happens to contain xkv-looking bytes isn't mistaken for a record; only the
+// unreadable stretches are searched byte by byte. Candidates must carry
+// revision and transaction numbers above the last committed ones before
+// their checksum is computed, and the total checksum work is capped.
+func completeTxAfter(st storage, from, size, tail int64, lastRev, lastTx uint64) (string, error) {
 	if size-from > 2*MaxTxSize {
-		return true, nil
+		return fmt.Sprintf("%d bytes follow a damaged record, more than a cut-short write can leave", size-from), nil
 	}
 	buf := make([]byte, size-from)
 	if _, err := st.ReadAt(buf, from); err != nil && err != io.EOF {
-		return false, err
+		return "", err
 	}
-	for i := 1; i+frameSize <= len(buf); i++ {
+	budget := int64(4*len(buf)) + 64<<20
+
+	// frameAt checks for a plausible, intact frame at i. It returns its
+	// body and length, or nil.
+	frameAt := func(i int) ([]byte, int) {
+		if i+frameSize > len(buf) {
+			return nil, 0
+		}
+		n := int64(binary.LittleEndian.Uint32(buf[i : i+4]))
+		if n == 0 || n > maxRecord || n > int64(len(buf)-i-frameSize) {
+			return nil, 0
+		}
+		b := buf[i+frameSize : i+frameSize+int(n)]
+		switch b[0] {
+		case recRevision, recCommit:
+		default:
+			return nil, 0
+		}
+		// Cheap checks before any checksum. A revision needs numbers above
+		// the last committed ones (compaction leaves gaps, so no upper
+		// bound), a tx id no higher than its revision, a valid flags byte
+		// and a plausible key length. A commit needs a tx id above the last
+		// one and a revision count the bytes after the last commit could
+		// hold (each revision frame takes at least 16 bytes).
+		first, k := binary.Uvarint(b[1:])
+		if k <= 0 {
+			return nil, 0
+		}
+		if b[0] == recRevision {
+			tx, k2 := binary.Uvarint(b[1+k:])
+			if k2 <= 0 || first <= lastRev || tx <= lastTx || tx > first {
+				return nil, 0
+			}
+			rest := b[1+k+k2:]
+			if len(rest) < 3 || rest[0] > flagDeleted {
+				return nil, 0
+			}
+			if _, k3 := binary.Varint(rest[1:]); k3 <= 0 {
+				return nil, 0
+			} else if kl, k4 := binary.Uvarint(rest[1+k3:]); k4 <= 0 || kl == 0 || kl > MaxKeySize || kl > uint64(n) {
+				return nil, 0
+			}
+		} else {
+			count, k2 := binary.Uvarint(b[1+k:])
+			if first <= lastTx || k2 <= 0 || count == 0 || count > uint64(tail/16) || uint64(n) > 32+10*count {
+				return nil, 0
+			}
+		}
+		budget -= n
+		if budget < 0 {
+			return nil, -1
+		}
 		body, total := checkFrame(buf[i:])
-		if body == nil || body[0] != recRevision {
-			continue
-		}
-		first, err := decodeRev(body)
-		if err != nil || first.rev <= lastRev || first.tx <= lastTx {
-			continue
-		}
-		// Try to read a transaction starting here.
-		j := i + total
-		count := uint64(1)
-		last := first.rev
-		for j+frameSize <= len(buf) {
-			b, t := checkFrame(buf[j:])
-			if b == nil {
-				break
-			}
-			if b[0] == recCommit {
-				c, err := decodeCommit(b)
-				if err == nil && c.tx == first.tx && c.count == count && c.lastRev == last {
-					return true, nil
-				}
-				break
-			}
-			rr, err := decodeRev(b)
-			if err != nil || rr.tx != first.tx || rr.rev <= last {
-				break
-			}
-			count++
-			last = rr.rev
-			j += t
-		}
+		return body, total
 	}
-	return false, nil
+
+	for i := 0; i+frameSize <= len(buf); {
+		body, total := frameAt(i)
+		if total < 0 {
+			return "too much to check after a damaged record", nil
+		}
+		if body == nil {
+			i++
+			continue
+		}
+		if body[0] == recRevision {
+			if first, err := decodeRev(body); err == nil {
+				// Does a whole transaction start here?
+				j := i + total
+				count, last := uint64(1), first.rev
+				for {
+					b, t := frameAt(j)
+					if t < 0 {
+						return "too much to check after a damaged record", nil
+					}
+					if b == nil {
+						break
+					}
+					if b[0] == recCommit {
+						c, err := decodeCommit(b)
+						if err == nil && c.tx == first.tx && c.count == count && c.lastRev == last {
+							return "a damaged record is followed by whole transactions", nil
+						}
+						break
+					}
+					rr, err := decodeRev(b)
+					if err != nil || rr.tx != first.tx || rr.rev <= last {
+						break
+					}
+					count++
+					last = rr.rev
+					j += t
+				}
+			}
+		}
+		// An intact frame: its bytes are a record, not something to search.
+		i += total
+	}
+	return "", nil
 }
 
 // findRev returns the index entry for rev.
@@ -483,10 +684,11 @@ func (db *DB) findRev(rev uint64) (revMeta, bool) {
 	return revMeta{}, false
 }
 
-// readRec reads and decodes the record described by m.
+// readRec reads and decodes the record described by m, and checks it is the
+// record the index says it is.
 func (db *DB) readRec(m revMeta) (*rec, error) {
 	b := make([]byte, m.n)
-	if _, err := db.st.ReadAt(b, m.off); err != nil && !(err == io.EOF) {
+	if _, err := db.st.ReadAt(b, m.off); err != nil && err != io.EOF {
 		return nil, err
 	}
 	body, total := checkFrame(b)
@@ -494,8 +696,8 @@ func (db *DB) readRec(m revMeta) (*rec, error) {
 		return nil, fmt.Errorf("%w: revision %d fails its checksum", ErrCorrupt, m.rev)
 	}
 	r, err := decodeRev(body)
-	if err != nil || r.rev != m.rev {
-		return nil, fmt.Errorf("%w: revision %d can't be read", ErrCorrupt, m.rev)
+	if err != nil || r.rev != m.rev || r.tx != m.tx || r.key != m.key || r.deleted != m.deleted {
+		return nil, fmt.Errorf("%w: revision %d doesn't read back as indexed", ErrCorrupt, m.rev)
 	}
 	return r, nil
 }
@@ -511,7 +713,7 @@ func (db *DB) Close() error {
 		return nil
 	}
 	db.closed = true
-	if db.path != "" && !db.opts.ReadOnly && db.dirty {
+	if db.path != "" && !db.opts.ReadOnly && db.dirty && db.failed == nil {
 		db.writeSnapshot() // best effort: a missing snapshot only means a slower open
 	}
 	return db.st.Close()
