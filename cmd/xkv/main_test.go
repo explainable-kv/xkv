@@ -507,13 +507,23 @@ func TestHTTPWatch(t *testing.T) {
 	db.Put(t.Context(), "skip", []byte("x"), xkv.Reason("r"), xkv.Actor("x"))
 	db.Put(t.Context(), "cfg", []byte("y"), xkv.Reason("r"), xkv.Actor("x"))
 	br := bufio.NewReader(resp2.Body)
+	// The stream opens with retry and the id it starts from.
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(l) == "" {
+			break
+		}
+	}
 	var event []string
 	for len(event) < 2 {
 		l, err := br.ReadString('\n')
 		if err != nil {
 			t.Fatal(err)
 		}
-		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "retry:") {
+		if l = strings.TrimSpace(l); l != "" {
 			event = append(event, l)
 		}
 	}

@@ -358,16 +358,17 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 	since := q.Get("since")
 	// A browser's EventSource reconnects on its own and says where it got
 	// to: that wins over the URL, so nothing is missed or sent twice.
-	if id := r.Header.Get("Last-Event-ID"); id != "" {
-		since, all = id, false
-	}
-	if all && since != "" {
+	resume := r.Header.Get("Last-Event-ID")
+	if all && since != "" && resume == "" {
 		fail(w, http.StatusBadRequest, "all and since don't go together")
 		return
 	}
+	if resume != "" {
+		// all=1 keeps its meaning: skip what compaction removed.
+		since = resume
+	}
+	opts.SkipCompacted = all
 	switch {
-	case all:
-		opts.SkipCompacted = true
 	case since != "":
 		v, err := strconv.ParseUint(since, 10, 64)
 		if err != nil {
@@ -375,6 +376,8 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		opts.Since = v
+	case all:
+		// From the start.
 	default:
 		st, err := db.Stats()
 		if err != nil {
@@ -396,8 +399,10 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if sse {
-		// How long a browser waits before reconnecting.
-		io.WriteString(w, "retry: 3000\n\n")
+		// How long a browser waits before reconnecting, and where it starts
+		// from if it does so before the first event: an id with no data
+		// still sets EventSource's last event id.
+		fmt.Fprintf(w, "retry: 3000\nid: %d\n\n", opts.Since)
 	}
 	if flusher != nil {
 		flusher.Flush()

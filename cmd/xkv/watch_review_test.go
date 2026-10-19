@@ -35,14 +35,19 @@ func TestReviewSSELastEventID(t *testing.T) {
 	got := make(chan string, 1)
 	go func() {
 		br := bufio.NewReader(resp.Body)
+		last := ""
 		for {
 			l, err := br.ReadString('\n')
 			if err != nil {
 				return
 			}
-			if strings.HasPrefix(l, "id:") {
-				got <- strings.TrimSpace(l)
+			// The opening block carries the starting id; events carry data.
+			if strings.HasPrefix(l, "data:") {
+				got <- last
 				return
+			}
+			if strings.HasPrefix(l, "id:") {
+				last = strings.TrimSpace(l)
 			}
 		}
 	}()

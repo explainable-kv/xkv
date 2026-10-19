@@ -303,8 +303,8 @@ err := db.Watch(ctx, xkv.WatchOptions{Since: st.LastRev, Prefix: "config/"}, fun
   `Prefix` is told about any gap, whatever its keys.
 - **Another store at the path.** If the file a read-only handle follows is
   replaced by a different store (recreated, or restored from another
-  store), `Watch` stops with `ErrReplaced` rather than mixing up two
-  stores' revision numbers. A read caught in the middle of a write is
+  store or from an older backup of this one), `Watch` stops with
+  `ErrReplaced` rather than mixing up two histories' revision numbers. A read caught in the middle of a write is
   tried again on the next few polls before `Watch` gives up.
 
 `fn` holds no lock, so it may read from the store and write to it.

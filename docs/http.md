@@ -121,9 +121,11 @@ as above, per line. An empty line now and then is a keep-alive. With
 an event whose `id` is its revision number, with a `: keep-alive` comment
 every 15 seconds; a browser's `EventSource` can read it. When `EventSource`
 reconnects on its own it sends the last id it got as `Last-Event-ID`, and
-the stream carries on from there (the header wins over `since` and `all`),
-so a dropped connection loses nothing and repeats nothing. The stream
-starts with `retry: 3000`, the time a browser waits before reconnecting.
+the stream carries on from there (the header wins over `since`; with
+`all=1` it still skips what compaction removed), so a dropped connection
+loses nothing and repeats nothing. The stream starts with `retry: 3000`,
+the time a browser waits before reconnecting, and an `id` for where it
+starts, so a drop before the first event resumes from there too.
 
 The stream starts at once. If revisions above `since` were removed by
 compaction before they could be sent, it ends with an `{"error": "..."}`

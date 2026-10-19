@@ -165,6 +165,28 @@ func (db *DB) watchGap(pos uint64) bool {
 	return db.revs[len(db.revs)-1].rev <= pos
 }
 
+// sameHistory checks that n, the file now at this handle's path, carries on
+// the history this handle has read, rather than being another store
+// (recreated, restored from another store, given a new id) or an older
+// backup of this one. Following either would mix up revision numbers.
+// Compaction keeps every key's latest revision, so the new file must hold,
+// for every key read here, a revision at least as new. Called with mu held.
+func (db *DB) sameHistory(n *DB) error {
+	if db.hdr.version >= 2 && n.hdr.version >= 2 && n.hdr.store != db.hdr.store {
+		return fmt.Errorf("%w: %s now holds store %s, not %s", ErrReplaced, db.path, n.hdr.store, db.hdr.store)
+	}
+	if n.hdr.version < db.hdr.version && n.hdr.version != 0 {
+		return fmt.Errorf("%w: %s now holds a file of an older format", ErrReplaced, db.path)
+	}
+	for name, k := range db.keys {
+		nk, ok := n.keys[name]
+		if !ok || nk.latest() < k.latest() {
+			return fmt.Errorf("%w: %s no longer holds revision %d of %q: another store, or an older copy of this one, is at that path", ErrReplaced, db.path, k.latest(), name)
+		}
+	}
+	return nil
+}
+
 // refreshTries is how many Refresh failures in a row end a following Watch.
 const refreshTries = 5
 
@@ -223,12 +245,11 @@ func (db *DB) Refresh() error {
 			f.Close()
 			return err
 		}
-		if db.hdr.version >= 2 && n.hdr.version >= 2 && n.hdr.store != db.hdr.store {
-			// Another store now lives at this path (recreated, restored
-			// from another store's backup, or given a new id): following
-			// it would mix two stores' revision numbers.
-			f.Close()
-			return fmt.Errorf("%w: %s now holds store %s, not %s", ErrReplaced, db.path, n.hdr.store, db.hdr.store)
+		if db.hdr.version != 0 {
+			if err := db.sameHistory(n); err != nil {
+				f.Close()
+				return err
+			}
 		}
 		db.st.Close()
 		db.file, db.st, db.hdr = n.file, n.st, n.hdr
