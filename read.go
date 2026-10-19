@@ -158,7 +158,7 @@ func (db *DB) Keys(ctx context.Context, prefix string) ([]string, error) {
 // before m (m.gap), the one kept further back is not m's predecessor, so
 // there is no answer.
 func (db *DB) prevOf(m revMeta) (revMeta, bool) {
-	if m.gap {
+	if m.gap || m.history {
 		return revMeta{}, false
 	}
 	k, ok := db.keys[m.key]

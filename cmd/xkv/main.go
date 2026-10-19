@@ -35,6 +35,9 @@ Usage:
   xkv check FILE                                  read every record and cause
   xkv compact FILE [--keep N] [--keep-days DAYS]
   xkv repair FILE                                 trim a damaged end, keeping a copy
+  xkv export FILE [--since REV] [--out PATH]      changes since REV, for another store
+  xkv import FILE EXCHANGE --reason TEXT [--conflicts newest|ours|theirs] [--actor NAME] [--ref REF]
+  xkv upgrade FILE                                rewrite a 0.1 store as file format 2
   xkv serve FILE [--addr 127.0.0.1:7070] [--relaxed]
   xkv version
 
@@ -141,6 +144,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		err = cmdCompact(rest, stdout)
 	case "repair":
 		err = cmdRepair(rest, stdout)
+	case "export":
+		err = cmdExport(rest, stdout, stderr)
+	case "import":
+		err = cmdImport(rest, stdin, stdout)
+	case "upgrade":
+		err = cmdUpgrade(rest, stdout)
 	case "serve":
 		err = cmdServe(rest, stdout, stderr)
 	case "version", "--version", "-v":
@@ -447,10 +456,14 @@ func cmdStats(args []string, stdout io.Writer) error {
 		return writeJSON(stdout, map[string]any{
 			"keys": s.Keys, "live_keys": s.LiveKeys, "revisions": s.Revisions,
 			"last_rev": s.LastRev, "last_tx": s.LastTx, "file_size": s.FileSize,
+			"format": s.Format, "store_id": s.StoreID,
 		})
 	}
-	fmt.Fprintf(stdout, "keys:       %d (%d with a value)\nrevisions:  %d (last r%d, %d transactions)\nfile size:  %d bytes\n",
-		s.Keys, s.LiveKeys, s.Revisions, s.LastRev, s.LastTx, s.FileSize)
+	fmt.Fprintf(stdout, "keys:       %d (%d with a value)\nrevisions:  %d (last r%d, %d transactions)\nfile size:  %d bytes\nformat:     %d\n",
+		s.Keys, s.LiveKeys, s.Revisions, s.LastRev, s.LastTx, s.FileSize, s.Format)
+	if s.StoreID != "" {
+		fmt.Fprintf(stdout, "store id:   %s\n", s.StoreID)
+	}
 	return nil
 }
 

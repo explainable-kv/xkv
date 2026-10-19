@@ -21,6 +21,11 @@ const snapshotSuffix = ".idx"
 
 var snapMagic = [4]byte{'X', 'K', 'V', 'I'}
 
+// snapshotVersion is the layout of the snapshot file. Version 1 snapshots,
+// written by xkv 0.1, are ignored: the next open reads the whole file and
+// Close writes a version 2 one.
+const snapshotVersion = 2
+
 func (db *DB) writeSnapshot() error {
 	if err := db.st.Sync(); err != nil {
 		return err
@@ -35,7 +40,7 @@ func (db *DB) writeSnapshot() error {
 	}
 	b := make([]byte, 0, 64+len(db.revs)*16)
 	b = append(b, snapMagic[:]...)
-	b = binary.LittleEndian.AppendUint16(b, FormatVersion)
+	b = binary.LittleEndian.AppendUint16(b, snapshotVersion)
 	b = append(b, db.hdr.generation[:]...)
 	b = binary.AppendUvarint(b, uint64(db.end))
 	b = binary.AppendVarint(b, fi.ModTime().UnixNano())
@@ -49,6 +54,21 @@ func (db *DB) writeSnapshot() error {
 	for name := range db.keys {
 		ids[name] = uint64(len(ids))
 		b = appendString(b, name)
+	}
+	// The stores imported revisions came from, numbered for the entries.
+	storeIDs := map[StoreID]uint64{}
+	var storeList []StoreID
+	for _, m := range db.revs {
+		if m.origin != nil {
+			if _, ok := storeIDs[m.origin.store]; !ok {
+				storeIDs[m.origin.store] = uint64(len(storeList))
+				storeList = append(storeList, m.origin.store)
+			}
+		}
+	}
+	b = binary.AppendUvarint(b, uint64(len(storeList)))
+	for _, id := range storeList {
+		b = append(b, id[:]...)
 	}
 	b = binary.AppendUvarint(b, uint64(len(db.revs)))
 	var prev uint64
@@ -65,9 +85,23 @@ func (db *DB) writeSnapshot() error {
 		if m.gap {
 			fl |= 2
 		}
+		if m.history {
+			fl |= 4
+		}
+		if m.origin != nil {
+			fl |= 8
+		}
 		b = append(b, fl)
 		b = binary.AppendVarint(b, m.time)
-		b = binary.AppendUvarint(b, ids[m.key])
+		if m.history {
+			b = appendString(b, m.key)
+		} else {
+			b = binary.AppendUvarint(b, ids[m.key])
+		}
+		if m.origin != nil {
+			b = binary.AppendUvarint(b, storeIDs[m.origin.store])
+			b = binary.AppendUvarint(b, m.origin.rev)
+		}
 	}
 	b = binary.LittleEndian.AppendUint32(b, crc32.Checksum(b, castTab))
 
@@ -120,7 +154,7 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 	if crc32.Checksum(body, castTab) != binary.LittleEndian.Uint32(b[len(b)-4:]) {
 		return 0, false
 	}
-	if !bytes.Equal(body[0:4], snapMagic[:]) || binary.LittleEndian.Uint16(body[4:6]) != FormatVersion {
+	if !bytes.Equal(body[0:4], snapMagic[:]) || binary.LittleEndian.Uint16(body[4:6]) != snapshotVersion {
 		return 0, false
 	}
 	if !bytes.Equal(body[6:22], db.hdr.generation[:]) {
@@ -137,7 +171,7 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 	d.b = d.b[4:]
 	lastRev := d.uvarint()
 	lastTx := d.uvarint()
-	if d.err || end != size || mtime != fi.ModTime().UnixNano() || lastOff < headerSize || lastOff >= end {
+	if d.err || end != size || mtime != fi.ModTime().UnixNano() || lastOff < db.hdr.size() || lastOff >= end {
 		return 0, false
 	}
 	// The commit the snapshot ends on must still be in the file, unchanged.
@@ -153,11 +187,21 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 	for i := uint64(0); i < nk && !d.err; i++ {
 		names = append(names, d.str(MaxKeySize))
 	}
+	ns := d.uvarint()
+	if d.err || ns > uint64(len(d.b))/16 {
+		return 0, false
+	}
+	stores := make([]StoreID, ns)
+	for i := range stores {
+		copy(stores[i][:], d.b[:16])
+		d.b = d.b[16:]
+	}
 	nr := d.uvarint()
 	if d.err || nr > uint64(len(d.b)) {
 		return 0, false
 	}
 	keys := make(map[string]*keyState, nk)
+	origins := map[ident]uint64{}
 	revs := make([]revMeta, 0, nr)
 	var prev uint64
 	for i := uint64(0); i < nr && !d.err; i++ {
@@ -167,24 +211,47 @@ func (db *DB) loadSnapshot(size int64) (int64, bool) {
 		n := d.uvarint()
 		fl := d.byte1()
 		t := d.varint()
-		id := d.uvarint()
-		if d.err || delta == 0 || prev+delta < prev || txid == 0 || txid > lastTx || id >= uint64(len(names)) || n < frameSize || n > maxRecord+frameSize || off < headerSize || off+int64(n) > end {
+		var name string
+		if fl&4 != 0 {
+			name = d.str(MaxKeySize)
+		} else if id := d.uvarint(); id < uint64(len(names)) {
+			name = names[id]
+		} else {
+			return 0, false
+		}
+		var origin *ident
+		if fl&8 != 0 {
+			si := d.uvarint()
+			orev := d.uvarint()
+			if si >= uint64(len(stores)) || orev == 0 {
+				return 0, false
+			}
+			origin = &ident{store: stores[si], rev: orev}
+		}
+		if d.err || fl&^15 != 0 || name == "" || delta == 0 || prev+delta < prev || txid == 0 || txid > lastTx || n < frameSize || n > maxRecord+frameSize || off < db.hdr.size() || off+int64(n) > end {
 			return 0, false
 		}
 		prev += delta
-		name := names[id]
-		k, ok := keys[name]
-		if !ok {
-			k = &keyState{name: name}
-			keys[name] = k
+		m := revMeta{rev: prev, tx: txid, off: off, n: uint32(n), deleted: fl&1 != 0, gap: fl&2 != 0, history: fl&4 != 0, time: t, key: name, origin: origin}
+		if !m.history {
+			k, ok := keys[name]
+			if !ok {
+				k = &keyState{name: name}
+				keys[name] = k
+			}
+			k.revs = append(k.revs, prev)
+			m.key = k.name
 		}
-		k.revs = append(k.revs, prev)
-		revs = append(revs, revMeta{rev: prev, tx: txid, off: off, n: uint32(n), deleted: fl&1 != 0, gap: fl&2 != 0, time: t, key: k.name})
+		if origin != nil {
+			origins[*origin] = prev
+		}
+		revs = append(revs, m)
 	}
 	if d.err || len(d.b) != 0 || prev != lastRev && nr > 0 {
 		return 0, false
 	}
 	db.keys = keys
+	db.origins = origins
 	db.revs = revs
 	db.lastRev = lastRev
 	db.lastTx = lastTx

@@ -7,23 +7,32 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"unicode/utf8"
 )
 
-// FormatVersion is the version of the file format this package writes and
-// reads. docs/format.md in the repository describes it byte by byte.
-const FormatVersion = 1
+// FormatVersion is the version of the file format this package writes. It
+// reads version 1 files too, and rewrites one as version 2 the first time it
+// compacts it, upgrades it, or exports or imports through it.
+// docs/format.md in the repository describes both byte by byte.
+const FormatVersion = 2
 
 const (
-	headerSize = 32
-	frameSize  = 8 // length uint32 + crc uint32
+	headerSizeV1 = 32
+	headerSizeV2 = 48
+	maxHeader    = headerSizeV2
+	frameSize    = 8 // length uint32 + crc uint32
 
 	recRevision = 1
 	recCommit   = 2
 
 	flagDeleted = 1
+	flagOrigin  = 2 // the revision was imported; its first identity follows the causes
+	flagHistory = 4 // kept for the record (an imported cause); never a key's current value
+	flagsAll    = flagDeleted | flagOrigin | flagHistory
 )
 
 // Limits on what one write may hold.
@@ -39,16 +48,41 @@ const (
 
 // maxRecord bounds the body length a frame may claim; anything larger is
 // treated as damage, never allocated.
-const maxRecord = MaxValueSize + 4*MaxKeySize + MaxActorSize + MaxReasonSize + MaxRefSize + MaxCauses*(MaxKeySize+16) + 64
+const maxRecord = MaxValueSize + 4*MaxKeySize + MaxActorSize + MaxReasonSize + MaxRefSize + MaxCauses*(MaxKeySize+16) + 96
 
 var (
 	magic   = [4]byte{'X', 'K', 'V', 'F'}
 	castTab = crc32.MakeTable(crc32.Castagnoli)
 )
 
+// StoreID names a store. It is drawn at random when the store is created
+// (or upgraded from format 1) and kept through compaction, so a revision's
+// identity, its store and its number, stays the same wherever it travels.
+type StoreID [16]byte
+
+// String returns the id as 32 hex digits.
+func (id StoreID) String() string { return hex.EncodeToString(id[:]) }
+
+// ident is a revision's identity across stores: the store it was first
+// written to and its number there.
+type ident struct {
+	store StoreID
+	rev   uint64
+}
+
+func (i ident) String() string { return fmt.Sprintf("%s:%d", i.store, i.rev) }
+
 type header struct {
 	version    uint16
-	generation [16]byte
+	generation [16]byte // new on every rewrite; ties the snapshot to the file
+	store      StoreID  // version 2 only
+}
+
+func (h header) size() int64 {
+	if h.version == 1 {
+		return headerSizeV1
+	}
+	return headerSizeV2
 }
 
 func newHeader() (header, error) {
@@ -56,39 +90,69 @@ func newHeader() (header, error) {
 	if _, err := rand.Read(h.generation[:]); err != nil {
 		return h, err
 	}
+	if _, err := rand.Read(h.store[:]); err != nil {
+		return h, err
+	}
 	return h, nil
 }
 
+// rewrite returns the header for a rewrite of the file h heads: a new
+// generation, the same store id, format 2. A format 1 file gets its store id
+// here.
+func (h header) rewrite() (header, error) {
+	n, err := newHeader()
+	if err != nil {
+		return n, err
+	}
+	if h.version >= 2 {
+		n.store = h.store
+	}
+	return n, nil
+}
+
 func (h header) encode() []byte {
-	b := make([]byte, headerSize)
+	size := h.size()
+	b := make([]byte, size)
 	copy(b[0:4], magic[:])
 	binary.LittleEndian.PutUint16(b[4:6], h.version)
 	// b[6:8] flags, zero
 	copy(b[8:24], h.generation[:])
-	// b[24:28] reserved, zero
-	binary.LittleEndian.PutUint32(b[28:32], crc32.Checksum(b[0:28], castTab))
+	if h.version >= 2 {
+		copy(b[24:40], h.store[:])
+	}
+	// four reserved bytes, zero, then the checksum
+	binary.LittleEndian.PutUint32(b[size-4:], crc32.Checksum(b[:size-4], castTab))
 	return b
 }
 
+// decodeHeader parses the header at the start of b, which holds the first
+// maxHeader bytes of the file or the whole file if it is shorter.
 func decodeHeader(b []byte) (header, error) {
 	var h header
-	if len(b) < headerSize {
-		return h, errors.New("header too short")
-	}
-	if !bytes.Equal(b[0:4], magic[:]) {
+	if len(b) < 6 || !bytes.Equal(b[0:4], magic[:]) {
+		if len(b) < headerSizeV1 {
+			return h, errors.New("header too short")
+		}
 		return h, errors.New("not an xkv file")
 	}
-	if crc32.Checksum(b[0:28], castTab) != binary.LittleEndian.Uint32(b[28:32]) {
+	h.version = binary.LittleEndian.Uint16(b[4:6])
+	if h.version != 1 && h.version != 2 {
+		return h, fmt.Errorf("unsupported file format version %d (this is xkv %s, which reads 1 and 2)", h.version, Version)
+	}
+	size := int(h.size())
+	if len(b) < size {
+		return h, errors.New("header too short")
+	}
+	if crc32.Checksum(b[0:size-4], castTab) != binary.LittleEndian.Uint32(b[size-4:size]) {
 		return h, errors.New("header checksum mismatch")
 	}
-	h.version = binary.LittleEndian.Uint16(b[4:6])
-	if h.version != FormatVersion {
-		return h, errors.New("unsupported file format version")
-	}
-	if binary.LittleEndian.Uint16(b[6:8]) != 0 || binary.LittleEndian.Uint32(b[24:28]) != 0 {
+	if binary.LittleEndian.Uint16(b[6:8]) != 0 || binary.LittleEndian.Uint32(b[size-8:size-4]) != 0 {
 		return h, errors.New("header flags or reserved bytes are set")
 	}
 	copy(h.generation[:], b[8:24])
+	if h.version >= 2 {
+		copy(h.store[:], b[24:40])
+	}
 	return h, nil
 }
 
@@ -104,6 +168,8 @@ type rec struct {
 	reason  string
 	ref     string
 	causes  []CauseRef
+	history bool   // flagHistory
+	origin  *ident // flagOrigin: where an imported revision was first written
 }
 
 type commit struct {
@@ -147,6 +213,12 @@ func encodeRev(r *rec) []byte {
 	if r.deleted {
 		flags |= flagDeleted
 	}
+	if r.origin != nil {
+		flags |= flagOrigin
+	}
+	if r.history {
+		flags |= flagHistory
+	}
 	b = append(b, flags)
 	b = binary.AppendVarint(b, r.time)
 	b = appendString(b, r.key)
@@ -158,6 +230,10 @@ func encodeRev(r *rec) []byte {
 	for _, c := range r.causes {
 		b = appendString(b, c.Key)
 		b = binary.AppendUvarint(b, c.Rev)
+	}
+	if r.origin != nil {
+		b = append(b, r.origin.store[:]...)
+		b = binary.AppendUvarint(b, r.origin.rev)
 	}
 	return b
 }
@@ -252,6 +328,7 @@ func decodeRev(body []byte) (*rec, error) {
 	r.tx = d.uvarint()
 	flags := d.byte1()
 	r.deleted = flags&flagDeleted != 0
+	r.history = flags&flagHistory != 0
 	r.time = d.varint()
 	r.key = d.str(MaxKeySize)
 	r.value = append([]byte(nil), d.bytes(MaxValueSize)...)
@@ -267,7 +344,20 @@ func decodeRev(body []byte) (*rec, error) {
 		v := d.uvarint()
 		r.causes = append(r.causes, CauseRef{Key: k, Rev: v})
 	}
-	if d.err || len(d.b) != 0 || flags&^flagDeleted != 0 || r.rev == 0 || r.tx == 0 || r.key == "" {
+	if flags&flagOrigin != 0 && !d.err {
+		if len(d.b) < 16 {
+			return nil, errBadRecord
+		}
+		o := &ident{}
+		copy(o.store[:], d.b[:16])
+		d.b = d.b[16:]
+		o.rev = d.uvarint()
+		if o.rev == 0 {
+			return nil, errBadRecord
+		}
+		r.origin = o
+	}
+	if d.err || len(d.b) != 0 || flags&^flagsAll != 0 || r.rev == 0 || r.tx == 0 || r.key == "" {
 		return nil, errBadRecord
 	}
 	for _, c := range r.causes {

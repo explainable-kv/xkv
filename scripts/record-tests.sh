@@ -36,9 +36,10 @@ cmd="go test -count=1 -v -run TestCrashSIGKILL ."
 { header "1000 SIGKILLs of a writing process (XKV_CRASH_RUNS=1000)" "XKV_CRASH_RUNS=1000 $cmd"; XKV_CRASH_RUNS=1000 $cmd 2>&1; } > "$out/crash.txt"
 
 {
-	header "The fuzzers, two minutes each" "go test -run ^\$ -fuzz FuzzOpen -fuzztime 2m . ; go test -run ^\$ -fuzz FuzzDecode -fuzztime 2m ."
+	header "The fuzzers, two minutes each" "go test -run ^\$ -fuzz FuzzOpen -fuzztime 2m . ; go test -run ^\$ -fuzz FuzzDecode -fuzztime 2m . ; go test -run ^\$ -fuzz FuzzImport -fuzztime 2m ."
 	go test -run '^$' -fuzz FuzzOpen -fuzztime 2m . 2>&1 | tail -n 3
 	go test -run '^$' -fuzz FuzzDecode -fuzztime 2m . 2>&1 | tail -n 3
+	go test -run '^$' -fuzz FuzzImport -fuzztime 2m . 2>&1 | tail -n 3
 } > "$out/fuzz.txt"
 
 cmd="go test -run ^$ -bench . -benchtime 2s -count 3 ."

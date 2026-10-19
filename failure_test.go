@@ -180,13 +180,13 @@ func FuzzOpen(f *testing.F) {
 	seed, _ := os.ReadFile(path)
 	f.Add(seed)
 	f.Add(seed[:len(seed)-3])
-	f.Add(seed[:headerSize])
+	f.Add(seed[:headerSizeV2])
 	f.Add([]byte{})
-	f.Add(seed[:headerSize+5])
+	f.Add(seed[:headerSizeV2+5])
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < 8; i++ {
 		b := append([]byte(nil), seed...)
-		b[headerSize+rng.Intn(len(b)-headerSize)] ^= byte(1 + rng.Intn(255))
+		b[headerSizeV2+rng.Intn(len(b)-headerSizeV2)] ^= byte(1 + rng.Intn(255))
 		f.Add(b)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {

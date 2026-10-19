@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -66,6 +67,9 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 	return err
 }
 
+// maxImportBody caps an exchange file sent to /v1/import.
+const maxImportBody = 1 << 30
+
 // writeBody is the JSON a PUT or DELETE takes.
 type writeBody struct {
 	Value    *string        `json:"value"`
@@ -87,6 +91,8 @@ type writeBody struct {
 //	GET    /v1/revs/REV               one revision
 //	GET    /v1/revs/REV/why[?depth=N]
 //	GET    /v1/stats
+//	GET    /v1/export[?since=REV]     an exchange file
+//	POST   /v1/import?reason=R[&conflicts=newest|ours|theirs][&ref=REF]
 func newHandler(db *xkv.DB) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/keys", func(w http.ResponseWriter, r *http.Request) {
@@ -222,7 +228,58 @@ func newHandler(db *xkv.DB) http.Handler {
 		reply(w, map[string]any{
 			"keys": s.Keys, "live_keys": s.LiveKeys, "revisions": s.Revisions,
 			"last_rev": s.LastRev, "last_tx": s.LastTx, "file_size": s.FileSize,
+			"format": s.Format, "store_id": s.StoreID,
 		}, err)
+	})
+	mux.HandleFunc("GET /v1/export", func(w http.ResponseWriter, r *http.Request) {
+		var opts xkv.ExportOptions
+		if s := r.URL.Query().Get("since"); s != "" {
+			v, err := strconv.ParseUint(s, 10, 64)
+			if err != nil {
+				fail(w, http.StatusBadRequest, "since takes a revision number")
+				return
+			}
+			opts.Since = v
+		}
+		// Built in memory first, so an error can still be reported as one
+		// rather than as a cut-off file.
+		var buf bytes.Buffer
+		st, err := db.Export(r.Context(), &buf, opts)
+		if err != nil {
+			reply(w, nil, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("X-Xkv-Through", strconv.FormatUint(st.Through, 10))
+		w.Write(buf.Bytes())
+	})
+	mux.HandleFunc("POST /v1/import", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		pol, err := xkv.ParseConflictPolicy(q.Get("conflicts"))
+		if err != nil {
+			fail(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var opts []xkv.WriteOption
+		if q.Has("reason") {
+			opts = append(opts, xkv.Reason(q.Get("reason")))
+		}
+		actor := q.Get("actor")
+		if actor == "" {
+			actor = r.Header.Get("X-Xkv-Actor")
+		}
+		if actor == "" {
+			actor = "http"
+		}
+		opts = append(opts, xkv.Actor(actor), xkv.Ref(q.Get("ref")))
+		body := http.MaxBytesReader(w, r.Body, maxImportBody)
+		rep, err := db.Import(r.Context(), body, xkv.ImportOptions{Conflicts: pol}, opts...)
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			fail(w, http.StatusRequestEntityTooLarge, "exchange file too large for one request")
+			return
+		}
+		reply(w, rep, err)
 	})
 	return mux
 }
@@ -250,7 +307,7 @@ func reply(w http.ResponseWriter, v any, err error) {
 			status = http.StatusNotFound
 		case errors.Is(err, xkv.ErrTooLarge):
 			status = http.StatusRequestEntityTooLarge
-		case errors.Is(err, xkv.ErrNoReason), errors.Is(err, xkv.ErrBadCause), errors.Is(err, xkv.ErrInvalid):
+		case errors.Is(err, xkv.ErrNoReason), errors.Is(err, xkv.ErrBadCause), errors.Is(err, xkv.ErrInvalid), errors.Is(err, xkv.ErrBadExchange):
 			status = http.StatusBadRequest
 		case errors.Is(err, xkv.ErrClosed):
 			status = http.StatusServiceUnavailable

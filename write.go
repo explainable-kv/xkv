@@ -176,6 +176,56 @@ func (tx *Tx) write(key string, value []byte, deleted bool, opts []WriteOption) 
 	return r.revision(), nil
 }
 
+// importRev adds an imported revision to the transaction as it is: its
+// actor, reason, ref and time are kept, and its causes must already be
+// numbers in this store. It gets a number here; r.origin keeps where it was
+// first written.
+func (tx *Tx) importRev(r *rec) (Revision, error) {
+	if tx.finished {
+		return Revision{}, ErrTxFinished
+	}
+	if err := checkKey(r.key); err != nil {
+		return Revision{}, err
+	}
+	if len(r.value) > MaxValueSize {
+		return Revision{}, fmt.Errorf("%w: value is %d bytes, the limit is %d", ErrTooLarge, len(r.value), MaxValueSize)
+	}
+	if err := checkText("reason", r.reason, MaxReasonSize); err != nil {
+		return Revision{}, err
+	}
+	if err := checkText("actor", r.actor, MaxActorSize); err != nil {
+		return Revision{}, err
+	}
+	if err := checkText("ref", r.ref, MaxRefSize); err != nil {
+		return Revision{}, err
+	}
+	if len(r.causes) > MaxCauses {
+		return Revision{}, fmt.Errorf("%w: %d causes, the limit is %d", ErrInvalid, len(r.causes), MaxCauses)
+	}
+	for _, c := range r.causes {
+		if _, err := tx.resolveCause(causeSpec{key: c.Key, rev: c.Rev}); err != nil {
+			return Revision{}, err
+		}
+	}
+	r.rev, r.tx = tx.nextRev, tx.txid
+	if r.deleted {
+		r.value = nil
+	}
+	f := frame(encodeRev(r))
+	if tx.size+len(f) > MaxTxSize {
+		return Revision{}, fmt.Errorf("%w: a transaction holds at most %d bytes", ErrTooLarge, MaxTxSize)
+	}
+	tx.nextRev++
+	tx.recs = append(tx.recs, r)
+	tx.frames = append(tx.frames, f)
+	tx.size += len(f)
+	if !r.history {
+		tx.latest[r.key] = r
+	}
+	tx.byRev[r.rev] = r
+	return r.revision(), nil
+}
+
 // resolveCause checks one cause against the committed store and this
 // transaction's own earlier writes.
 func (tx *Tx) resolveCause(c causeSpec) (CauseRef, error) {
@@ -328,7 +378,7 @@ func (db *DB) update(ctx context.Context, fn func(tx *Tx) error, opts []WriteOpt
 	off := start
 	out := make([]Revision, len(tx.recs))
 	for i, r := range tx.recs {
-		db.addRev(revMeta{rev: r.rev, tx: r.tx, off: off, n: uint32(len(tx.frames[i])), deleted: r.deleted, time: r.time, key: r.key})
+		db.addRev(revMeta{rev: r.rev, tx: r.tx, off: off, n: uint32(len(tx.frames[i])), deleted: r.deleted, history: r.history, time: r.time, key: r.key, origin: r.origin})
 		off += int64(len(tx.frames[i]))
 		out[i] = r.revision()
 	}

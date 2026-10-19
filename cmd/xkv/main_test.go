@@ -215,7 +215,7 @@ func TestRepairCommand(t *testing.T) {
 	b, _ := os.ReadFile(f)
 	os.Remove(f + ".idx")
 	// Damage the first revision: whole transactions follow, so Open refuses.
-	b[40] ^= 0xff
+	b[56] ^= 0xff
 	os.WriteFile(f, b, 0o644)
 	if _, e, code := xkvRun(t, "", "get", f, "k"); code != 1 || !strings.Contains(e, "damaged") {
 		t.Fatalf("get on a damaged file: %d %s", code, e)
@@ -227,5 +227,135 @@ func TestRepairCommand(t *testing.T) {
 	matches, _ := filepath.Glob(f + ".trimmed-*")
 	if len(matches) != 1 {
 		t.Fatalf("trimmed bytes not kept: %v", matches)
+	}
+}
+
+func TestExchangeCommands(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.xkv"), filepath.Join(dir, "b.xkv")
+	ex := filepath.Join(dir, "a-changes.xkvx")
+	put := func(f string, args ...string) {
+		t.Helper()
+		if _, e, code := xkvRun(t, "", append([]string{"put", f}, args...)...); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	put(a, "chargeback:cb_991", "card dispute filed", "--reason", "bank notice", "--actor", "billing-worker")
+	put(a, "risk:42:score", "0.82", "--reason", "new chargeback", "--cause", "chargeback:cb_991", "--actor", "risk-model")
+	out, e, code := xkvRun(t, "", "export", a, "--out", ex)
+	if code != 0 || !strings.Contains(out, "exported 2 revisions") || !strings.Contains(out, "--since 2") {
+		t.Fatalf("export: %d %s %s", code, out, e)
+	}
+	if _, e, code := xkvRun(t, "", "import", b, ex); code != 1 || !strings.Contains(e, "reason") {
+		t.Fatalf("import without a reason: %d %s", code, e)
+	}
+	out, e, code = xkvRun(t, "", "import", b, ex, "--reason", "nightly sync from site a")
+	if code != 0 || !strings.Contains(out, "2 imported") {
+		t.Fatalf("import: %d %s %s", code, out, e)
+	}
+	out, _, _ = xkvRun(t, "", "why", b, "risk:42:score")
+	if !strings.Contains(out, "card dispute filed") || !strings.Contains(out, "imported from") {
+		t.Fatalf("why after import:\n%s", out)
+	}
+	// Both sides change the same key; the import settles it and says so.
+	put(a, "risk:42:score", "0.9", "--reason", "second chargeback", "--actor", "risk-model")
+	put(b, "risk:42:score", "0.5", "--reason", "manual review", "--actor", "analyst")
+	exStdout, _, code := xkvRun(t, "", "export", a, "--since", "2")
+	if code != 0 {
+		t.Fatal("export to stdout failed")
+	}
+	out, e, code = xkvRun(t, exStdout, "import", b, "-", "--reason", "sync", "--conflicts", "ours", "--json")
+	if code != 0 {
+		t.Fatalf("import from stdin: %s", e)
+	}
+	var rep xkv.ImportReport
+	if err := json.Unmarshal([]byte(out), &rep); err != nil || len(rep.Conflicts) != 1 || rep.Conflicts[0].Kept != "ours" {
+		t.Fatalf("report: %v %s", err, out)
+	}
+	if out, _, _ := xkvRun(t, "", "get", b, "risk:42:score"); strings.TrimSpace(out) != "0.5" {
+		t.Fatalf("kept ours: %q", out)
+	}
+	if _, e, code := xkvRun(t, exStdout, "import", b, "-", "--reason", "x", "--conflicts", "mine"); code != 2 {
+		t.Fatalf("bad policy: %d %s", code, e)
+	}
+	if _, e, code := xkvRun(t, exStdout[:len(exStdout)/2], "import", b, "-", "--reason", "x"); code != 1 || !strings.Contains(e, "not a valid exchange file") {
+		t.Fatalf("cut file: %d %s", code, e)
+	}
+	out, _, _ = xkvRun(t, "", "stats", b)
+	if !strings.Contains(out, "format:     2") || !strings.Contains(out, "store id:") {
+		t.Fatalf("stats: %s", out)
+	}
+
+	// A 0.1 store: export says to upgrade; upgrade does it, once.
+	old := filepath.Join(dir, "old.xkv")
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "format1.xkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(old, data, 0o644)
+	if _, e, code := xkvRun(t, "", "export", old); code != 1 || !strings.Contains(e, "xkv upgrade") {
+		t.Fatalf("export of a format 1 store: %d %s", code, e)
+	}
+	if out, e, code := xkvRun(t, "", "upgrade", old); code != 0 || !strings.Contains(out, "from file format 1 to 2") {
+		t.Fatalf("upgrade: %d %s %s", code, out, e)
+	}
+	if out, _, code := xkvRun(t, "", "upgrade", old); code != 0 || !strings.Contains(out, "already file format 2") {
+		t.Fatalf("second upgrade: %d %s", code, out)
+	}
+	if out, _, _ := xkvRun(t, "", "get", old, "account:42:limit"); strings.TrimSpace(out) != "50" {
+		t.Fatalf("after upgrade: %q", out)
+	}
+}
+
+func TestHTTPExchange(t *testing.T) {
+	open := func(name string) (*xkv.DB, *httptest.Server) {
+		db, err := xkv.Open(filepath.Join(t.TempDir(), name), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		srv := httptest.NewServer(newHandler(db))
+		t.Cleanup(srv.Close)
+		return db, srv
+	}
+	a, sa := open("a.xkv")
+	_, sb := open("b.xkv")
+	if _, err := a.Put(t.Context(), "k", []byte("v"), xkv.Reason("r"), xkv.Actor("x")); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Get(sa.URL + "/v1/export?since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ex bytes.Buffer
+	ex.ReadFrom(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("X-Xkv-Through") != "1" {
+		t.Fatalf("export: %d %v", resp.StatusCode, resp.Header)
+	}
+	post := func(q string, body []byte) (int, map[string]any) {
+		resp, err := http.Post(sb.URL+"/v1/import"+q, "application/x-ndjson", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m
+	}
+	if code, _ := post("", ex.Bytes()); code != 400 {
+		t.Fatalf("no reason: %d", code)
+	}
+	if code, m := post("?reason=sync&conflicts=theirs", ex.Bytes()); code != 200 || m["imported"] != 1.0 {
+		t.Fatalf("import: %d %v", code, m)
+	}
+	if code, _ := post("?reason=sync", ex.Bytes()[:ex.Len()-3]); code != 400 {
+		t.Fatalf("cut file: %d", code)
+	}
+	if code, _ := post("?reason=sync&conflicts=mine", ex.Bytes()); code != 400 {
+		t.Fatalf("bad policy: %d", code)
+	}
+	if resp, _ := http.Get(sa.URL + "/v1/export?since=x"); resp.StatusCode != 400 {
+		t.Fatalf("bad since: %d", resp.StatusCode)
 	}
 }

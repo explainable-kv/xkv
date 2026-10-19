@@ -7,6 +7,7 @@ package xkv
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -99,7 +100,28 @@ func TestHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(out, "done")
 		out.Flush()
-		select {}
+		time.Sleep(time.Hour) // until killed
+	case "importer":
+		// Imports the exchange file named by XKV_HELPER_EXCHANGE.
+		data, err := os.ReadFile(os.Getenv("XKV_HELPER_EXCHANGE"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		db, err := Open(path, nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		fmt.Fprintln(out, "start")
+		out.Flush()
+		if _, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(data), ImportOptions{}, Reason("sync")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		fmt.Fprintln(out, "done")
+		out.Flush()
+		time.Sleep(time.Hour) // until killed
 	case "holder":
 		db, err := Open(path, nil)
 		if err != nil {
@@ -111,7 +133,7 @@ func TestHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(out, "ready")
 		out.Flush()
-		select {}
+		time.Sleep(time.Hour) // until killed
 	}
 }
 
@@ -317,4 +339,146 @@ func TestTwoProcesses(t *testing.T) {
 		t.Fatalf("after the holder died: %v", err)
 	}
 	db.Close()
+}
+
+// TestKillDuringImport kills a process importing an exchange file at random
+// moments, then imports the same file again. Every time the file checks out,
+// and the second import finishes the job: the store ends with the same
+// values as one clean import, and no revision was imported twice.
+func TestKillDuringImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
+	}
+	runs := 40
+	if n, err := strconv.Atoi(os.Getenv("XKV_IMPORT_KILLS")); err == nil && n > 0 {
+		runs = n
+	}
+	dir := t.TempDir()
+	// The source: 300 transactions with causes.
+	src, err := Open(filepath.Join(dir, "src.xkv"), &Options{NoSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := rand.New(rand.NewSource(3))
+	var revs []Revision
+	for i := 0; i < 300; i++ {
+		opts := []WriteOption{Reason(fmt.Sprint("change ", i)), Actor("source")}
+		if len(revs) > 0 {
+			r := revs[rng.Intn(len(revs))]
+			opts = append(opts, Cause(r.Key, r.Rev))
+		}
+		err := src.Update(bg, func(tx *Tx) error {
+			for j := 1 + rng.Intn(3); j > 0; j-- {
+				r, err := tx.Put(fmt.Sprintf("k%02d", rng.Intn(40)), []byte(fmt.Sprint(rng.Intn(100))))
+				if err != nil {
+					return err
+				}
+				revs = append(revs, r)
+			}
+			return nil
+		}, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	if _, err := src.Export(bg, &buf, ExportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	src.Close()
+	exPath := filepath.Join(dir, "changes.xkvx")
+	if err := os.WriteFile(exPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The target starts with values of its own on some of the same keys,
+	// so the import settles conflicts too.
+	base := filepath.Join(dir, "base.xkv")
+	tgt, err := Open(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		if _, err := tgt.Put(bg, fmt.Sprintf("k%02d", i*2), []byte("local"), Reason("local value"), Actor("target")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tgt.Close()
+	baseBytes, _ := os.ReadFile(base)
+
+	// A clean import gives the values to expect, and its length the
+	// window the kills aim at.
+	ref := filepath.Join(dir, "ref.xkv")
+	os.WriteFile(ref, baseBytes, 0o644)
+	rdb, err := Open(ref, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	rrep, err := rdb.Import(WithActor(bg, "sync"), bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("sync"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := time.Since(start)
+	want := valuesOf(t, rdb)
+	rdb.Close()
+
+	partial := 0
+	for run := 0; run < runs; run++ {
+		path := filepath.Join(dir, fmt.Sprintf("t%d.xkv", run))
+		os.WriteFile(path, baseBytes, 0o644)
+		cmd := helper(t, "importer", path)
+		cmd.Env = append(cmd.Env, "XKV_HELPER_EXCHANGE="+exPath)
+		stdout, _ := cmd.StdoutPipe()
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		sc := bufio.NewScanner(stdout)
+		if !sc.Scan() || sc.Text() != "start" {
+			t.Fatal("importer didn't start")
+		}
+		time.Sleep(time.Duration(rng.Int63n(int64(window) * 3 / 2)))
+		cmd.Process.Signal(syscall.SIGKILL)
+		cmd.Wait()
+		if rep, err := Check(path); err != nil || !rep.OK() {
+			t.Fatalf("run %d: check after the kill: %v %v", run, err, rep.Problems)
+		}
+		db, err := Open(path, nil)
+		if err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+		rep, err := db.Import(WithActor(bg, "sync"), bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("sync"))
+		if err != nil {
+			t.Fatalf("run %d: import again: %v", run, err)
+		}
+		if rep.Skipped > 0 && rep.Imported+rep.Context > 0 {
+			partial++
+		}
+		got := valuesOf(t, db)
+		for k, v := range want {
+			if got[k] != v {
+				t.Fatalf("run %d: %s is %q, a clean import gives %q", run, k, got[k], v)
+			}
+		}
+		seen := map[ident]bool{}
+		db.mu.RLock()
+		for _, m := range db.revs {
+			if m.origin != nil {
+				if seen[*m.origin] {
+					db.mu.RUnlock()
+					t.Fatalf("run %d: %s was imported twice", run, m.origin)
+				}
+				seen[*m.origin] = true
+			}
+		}
+		n := len(seen)
+		db.mu.RUnlock()
+		if n != rrep.Imported+rrep.Context+rrep.Agreed {
+			t.Fatalf("run %d: %d imported revisions, a clean import has %d", run, n, rrep.Imported+rrep.Context+rrep.Agreed)
+		}
+		db.Close()
+		os.Remove(path)
+		os.Remove(path + snapshotSuffix)
+	}
+	t.Logf("%d kills of a process importing %d revisions in %d transactions (a clean import takes %s and settles %d conflicts): %d landed part-way, and every time the file checked out and importing again ended with the values of a clean import and no revision imported twice",
+		runs, rrep.Imported, 300, window.Round(time.Millisecond), len(rrep.Conflicts), partial)
 }

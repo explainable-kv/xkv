@@ -92,6 +92,12 @@ func textDetail(r Revision, prev *Revision, withCauses, prevCompacted bool) stri
 	if r.Ref != "" {
 		parts = append(parts, "ref "+r.Ref)
 	}
+	if r.Origin != "" {
+		parts = append(parts, "imported from "+shortOrigin(r.Origin))
+	}
+	if r.History {
+		parts = append(parts, "kept as history")
+	}
 	if withCauses && len(r.Causes) > 0 {
 		cs := make([]string, len(r.Causes))
 		for i, c := range r.Causes {
@@ -135,4 +141,13 @@ func textPlural(n int, word string) string {
 // actor, reason, ref and causes.
 func (r Revision) String() string {
 	return fmt.Sprintf("%s (r%d) · %s", textHead(r), r.Rev, textDetail(r, nil, true, false))
+}
+
+// shortOrigin shortens "STOREID:REV" to its first 8 hex digits and the
+// revision, enough to tell stores apart on screen.
+func shortOrigin(o string) string {
+	if i := strings.IndexByte(o, ':'); i > 8 {
+		return o[:8] + o[i:]
+	}
+	return o
 }

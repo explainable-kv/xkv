@@ -5,6 +5,7 @@ package xkv
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -42,19 +43,15 @@ func Check(path string) (CheckReport, error) {
 	if size == 0 {
 		return rep, nil
 	}
-	if size < headerSize {
-		rep.Problems = append(rep.Problems, "the file is shorter than its header")
-		return rep, nil
-	}
-	hb := make([]byte, headerSize)
-	if _, err := f.ReadAt(hb, 0); err != nil {
+	hb := make([]byte, min(size, maxHeader))
+	if _, err := f.ReadAt(hb, 0); err != nil && err != io.EOF {
 		return rep, err
 	}
 	if db.hdr, err = decodeHeader(hb); err != nil {
 		rep.Problems = append(rep.Problems, "header: "+err.Error())
 		return rep, nil
 	}
-	res, err := scan(db.st, size, headerSize, 0, 0, db.addRev)
+	res, err := scan(db.st, size, db.hdr.size(), 0, 0, db.addRev)
 	if err != nil {
 		return rep, err
 	}
@@ -71,6 +68,9 @@ func Check(path string) (CheckReport, error) {
 		if err != nil {
 			rep.Problems = append(rep.Problems, err.Error())
 			continue
+		}
+		if r.origin != nil && db.hdr.version < 2 {
+			rep.Problems = append(rep.Problems, fmt.Sprintf("revision %d carries an import identity, which a format 1 file can't", m.rev))
 		}
 		for _, c := range r.causes {
 			cm, ok := db.findRev(c.Rev)

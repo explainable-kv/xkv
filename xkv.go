@@ -87,14 +87,28 @@ type Revision struct {
 	Ref     string     // optional outside reference: ticket, request id, tool call id
 	Causes  []CauseRef // earlier revisions that led to this one
 	Time    time.Time  // wall-clock write time, for display
+
+	// Origin is set on an imported revision: the store it was first
+	// written to and its number there, as "STOREID:REV". Empty for a
+	// revision written to this store.
+	Origin string
+
+	// History is set on a revision imported for the record only, because
+	// an imported revision names it as a cause. It never becomes its key's
+	// current value and isn't listed in the key's History.
+	History bool
 }
 
 func (r *rec) revision() Revision {
-	return Revision{
+	v := Revision{
 		Rev: r.rev, Tx: r.tx, Key: r.key, Value: r.value, Deleted: r.deleted,
 		Actor: r.actor, Reason: r.reason, Ref: r.ref, Causes: r.causes,
-		Time: time.Unix(0, r.time).UTC(),
+		Time: time.Unix(0, r.time).UTC(), History: r.history,
 	}
+	if r.origin != nil {
+		v.Origin = r.origin.String()
+	}
+	return v
 }
 
 // revMeta is the in-memory index entry for one revision.
@@ -105,8 +119,10 @@ type revMeta struct {
 	n       uint32 // frame length, header included
 	deleted bool
 	gap     bool // compaction removed revisions of this key just before this one
+	history bool // kept for the record only; not in its key's list of revisions
 	time    int64
 	key     string
+	origin  *ident // set for an imported revision: its identity where first written
 }
 
 // keyState holds one key's revisions, ascending, and the one copy of its
@@ -134,6 +150,7 @@ type DB struct {
 	lastTx  uint64
 	revs    []revMeta // ascending by rev
 	keys    map[string]*keyState
+	origins map[ident]uint64 // identity of each imported revision -> its number here
 	closed  bool
 	dirty   bool   // index changed since the snapshot was written
 	failed  error  // set when a write left the file in an unknown state
@@ -237,7 +254,7 @@ func OpenMemory(opts *Options) (*DB, error) {
 }
 
 func newDB(opts *Options) *DB {
-	db := &DB{keys: map[string]*keyState{}}
+	db := &DB{keys: map[string]*keyState{}, origins: map[ident]uint64{}}
 	if opts != nil {
 		db.opts = *opts
 	}
@@ -272,15 +289,16 @@ func (db *DB) load(useSnapshot bool) error {
 	if err != nil {
 		return err
 	}
-	if size < headerSize {
-		if size > 0 {
-			b := make([]byte, size)
-			if _, err := db.st.ReadAt(b, 0); err != nil && err != io.EOF {
-				return err
-			}
-			if !headerPrefix(b) {
-				return fmt.Errorf("%w: not an xkv file (%d bytes, shorter than a header)", ErrCorrupt, size)
-			}
+	hb := make([]byte, min(size, maxHeader))
+	if _, err := db.st.ReadAt(hb, 0); err != nil && err != io.EOF {
+		return err
+	}
+	h, herr := decodeHeader(hb)
+	if herr != nil && size < headerSizeV2 {
+		// Too short for a format 2 header and not a whole format 1 one:
+		// either nothing yet, or a creation cut short before any data.
+		if !headerPrefix(hb) {
+			return fmt.Errorf("%w: not an xkv file (%d bytes, shorter than a header)", ErrCorrupt, size)
 		}
 		if db.opts.ReadOnly {
 			return nil
@@ -303,20 +321,15 @@ func (db *DB) load(useSnapshot bool) error {
 			syncDir(db.path)
 		}
 		db.hdr = h
-		db.end = headerSize
+		db.end = h.size()
 		return nil
 	}
-	hb := make([]byte, headerSize)
-	if _, err := db.st.ReadAt(hb, 0); err != nil {
-		return err
-	}
-	h, err := decodeHeader(hb)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrCorrupt, err)
+	if herr != nil {
+		return fmt.Errorf("%w: %v", ErrCorrupt, herr)
 	}
 	db.hdr = h
 
-	from := int64(headerSize)
+	from := h.size()
 	if useSnapshot && db.path != "" && db.file != nil {
 		if off, ok := db.loadSnapshot(size); ok {
 			from = off
@@ -346,7 +359,7 @@ func (db *DB) load(useSnapshot bool) error {
 			return err
 		}
 	}
-	db.dirty = res.end > headerSize && from != res.end
+	db.dirty = res.end > h.size() && from != res.end
 	return nil
 }
 
@@ -397,14 +410,50 @@ func fileMode(path string) os.FileMode {
 // addRev adds one committed revision to the index. Revisions arrive in
 // ascending order.
 func (db *DB) addRev(m revMeta) {
-	k, ok := db.keys[m.key]
-	if !ok {
-		k = &keyState{name: m.key}
-		db.keys[m.key] = k
+	if m.origin != nil {
+		db.origins[*m.origin] = m.rev
 	}
-	k.revs = append(k.revs, m.rev)
-	m.key = k.name
+	if !m.history {
+		k, ok := db.keys[m.key]
+		if !ok {
+			k = &keyState{name: m.key}
+			db.keys[m.key] = k
+		}
+		k.revs = append(k.revs, m.rev)
+		m.key = k.name
+	}
 	db.revs = append(db.revs, m)
+}
+
+// identOf returns the identity of the revision m describes: where it was
+// first written.
+func (db *DB) identOf(m revMeta) ident {
+	if m.origin != nil {
+		return *m.origin
+	}
+	return ident{store: db.hdr.store, rev: m.rev}
+}
+
+// lookupIdent returns the local revision with identity id, if the store
+// holds it.
+func (db *DB) lookupIdent(id ident) (uint64, bool) {
+	if rev, ok := db.origins[id]; ok {
+		return rev, true
+	}
+	if id.store == db.hdr.store && db.hdr.version >= 2 {
+		if m, ok := db.findRev(id.rev); ok && m.origin == nil {
+			return id.rev, true
+		}
+	}
+	return 0, false
+}
+
+// StoreID returns the store's id. A format 1 store has none until it is
+// upgraded; ok is false then.
+func (db *DB) StoreID() (id StoreID, ok bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.hdr.store, db.hdr.version >= 2
 }
 
 // scanResult is what a scan found.
@@ -503,7 +552,7 @@ func scan(st storage, size, from int64, lastRev, lastTx uint64, add func(revMeta
 			} else if rr.tx != pendingTx {
 				break
 			}
-			pending = append(pending, revMeta{rev: rr.rev, tx: rr.tx, off: pos, n: uint32(total), deleted: rr.deleted, time: rr.time, key: rr.key})
+			pending = append(pending, revMeta{rev: rr.rev, tx: rr.tx, off: pos, n: uint32(total), deleted: rr.deleted, history: rr.history, time: rr.time, key: rr.key, origin: rr.origin})
 			ok = true
 		case recCommit:
 			c, err := decodeCommit(body)
@@ -608,7 +657,7 @@ func completeTxAfter(st storage, from, size, tail int64, lastRev, lastTx uint64)
 				return nil, 0
 			}
 			rest := b[1+k+k2:]
-			if len(rest) < 3 || rest[0] > flagDeleted {
+			if len(rest) < 3 || rest[0]&^flagsAll != 0 {
 				return nil, 0
 			}
 			if _, k3 := binary.Varint(rest[1:]); k3 <= 0 {
@@ -696,7 +745,7 @@ func (db *DB) readRec(m revMeta) (*rec, error) {
 		return nil, fmt.Errorf("%w: revision %d fails its checksum", ErrCorrupt, m.rev)
 	}
 	r, err := decodeRev(body)
-	if err != nil || r.rev != m.rev || r.tx != m.tx || r.key != m.key || r.deleted != m.deleted {
+	if err != nil || r.rev != m.rev || r.tx != m.tx || r.key != m.key || r.deleted != m.deleted || r.history != m.history || (r.origin == nil) != (m.origin == nil) || (r.origin != nil && *r.origin != *m.origin) {
 		return nil, fmt.Errorf("%w: revision %d doesn't read back as indexed", ErrCorrupt, m.rev)
 	}
 	return r, nil
@@ -730,6 +779,8 @@ type Stats struct {
 	LastRev   uint64 // highest revision number ever written
 	LastTx    uint64 // highest transaction id ever written
 	FileSize  int64  // bytes
+	Format    int    // file format version: 1 or 2
+	StoreID   string // 32 hex digits; empty for a format 1 store
 }
 
 // Stats returns counts for the store.
@@ -739,7 +790,10 @@ func (db *DB) Stats() (Stats, error) {
 	if db.closed {
 		return Stats{}, ErrClosed
 	}
-	s := Stats{Keys: len(db.keys), Revisions: len(db.revs), LastRev: db.lastRev, LastTx: db.lastTx, FileSize: db.end}
+	s := Stats{Keys: len(db.keys), Revisions: len(db.revs), LastRev: db.lastRev, LastTx: db.lastTx, FileSize: db.end, Format: int(db.hdr.version)}
+	if db.hdr.version >= 2 {
+		s.StoreID = db.hdr.store.String()
+	}
 	for _, k := range db.keys {
 		if m, ok := db.findRev(k.latest()); ok && !m.deleted {
 			s.LiveKeys++

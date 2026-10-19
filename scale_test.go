@@ -4,6 +4,7 @@
 package xkv
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"os"
@@ -215,4 +216,62 @@ func BenchmarkWhy(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// TestExchangeScale exports 100,000 revisions in 1,000 transactions and
+// imports them into an empty store, timing both.
+func TestExchangeScale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("long")
+	}
+	n := 100_000
+	src := openT(t, tmpPath(t), &Options{NoSync: true})
+	rng := rand.New(rand.NewSource(12))
+	value := make([]byte, 32)
+	var prev Revision
+	for written := 0; written < n; written += 100 {
+		err := src.Update(WithActor(bg, "loader"), func(tx *Tx) error {
+			for i := 0; i < 100; i++ {
+				rng.Read(value)
+				var opts []WriteOption
+				if prev.Rev > 0 && rng.Intn(2) == 0 {
+					opts = append(opts, Cause(prev.Key, prev.Rev))
+				}
+				r, err := tx.Put(fmt.Sprintf("key:%05d", rng.Intn(10000)), value, opts...)
+				if err != nil {
+					return err
+				}
+				prev = r
+			}
+			return nil
+		}, Reason("bulk load"))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	t0 := time.Now()
+	st, err := src.Export(bg, &buf, ExportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := time.Since(t0)
+	dst := openT(t, tmpPath(t), nil)
+	t0 = time.Now()
+	rep, err := dst.Import(bg, bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("load"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp := time.Since(t0)
+	if rep.Imported != n || st.Revisions != n {
+		t.Fatalf("%+v %+v", st, rep)
+	}
+	t0 = time.Now()
+	again, err := dst.Import(bg, bytes.NewReader(buf.Bytes()), ImportOptions{}, Reason("load"))
+	if err != nil || again.Skipped != n {
+		t.Fatalf("%v %+v", err, again)
+	}
+	re := time.Since(t0)
+	t.Logf("exchange of %d revisions in %d transactions (binary values, half with a cause): export %s into a %.1f MB file; import %s with an fsync per transaction; importing the same file again %s, all skipped",
+		n, n/100, exp.Round(time.Millisecond), float64(buf.Len())/1e6, imp.Round(time.Millisecond), re.Round(time.Millisecond))
 }

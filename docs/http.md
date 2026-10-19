@@ -22,7 +22,9 @@ xkv serve settings.xkv --addr 127.0.0.1:7070
 | `GET /v1/why/KEY?depth=N` | the tree of causes behind the current value |
 | `GET /v1/revs/REV` | one revision by number |
 | `GET /v1/revs/REV/why?depth=N` | the tree behind one revision |
-| `GET /v1/stats` | counts |
+| `GET /v1/stats` | counts, the file format and the store id |
+| `GET /v1/export?since=REV` | an exchange file of the changes above REV (see [exchange.md](exchange.md)); the `X-Xkv-Through` header gives the REV for next time |
+| `POST /v1/import?reason=R` | import the exchange file in the body; also `conflicts=newest\|ours\|theirs`, `ref`, `actor`. Answers with the import report |
 
 Keys may contain slashes: `/v1/keys/config/db/timeout` is the key
 `config/db/timeout`. Go's HTTP router cleans paths, so keys with empty,
@@ -95,9 +97,9 @@ Errors come back as `{"error": "..."}` with these statuses:
 
 | Status | When |
 |---|---|
-| 400 | missing reason, bad cause, bad JSON or parameters |
+| 400 | missing reason, bad cause, bad JSON or parameters, an invalid or incomplete exchange file |
 | 404 | no such key or revision |
 | 410 | the revision was removed by compaction |
-| 413 | value or body too large |
+| 413 | value or body too large (an import body may be up to 1 GiB) |
 | 503 | the store is closed (the server is shutting down) |
 | 500 | anything else, including a store refusing writes after a failed write (reopen it) |

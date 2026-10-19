@@ -39,6 +39,31 @@ type CompactStats struct {
 // Writes wait while it runs; reads go on. The new file replaces the old one
 // with an atomic rename, so a compaction cut short leaves the old file whole.
 func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, error) {
+	return db.compact(ctx, opts, false)
+}
+
+// Upgrade rewrites a format 1 store as format 2, keeping every revision and
+// its number, and gives it a store id. A format 2 store is left alone.
+// Export and Import upgrade a writable store on their own; read-only
+// handles can't.
+func (db *DB) Upgrade(ctx context.Context) error {
+	db.mu.RLock()
+	v, closed := db.hdr.version, db.closed
+	db.mu.RUnlock()
+	if closed {
+		return ErrClosed
+	}
+	if v >= 2 {
+		return nil
+	}
+	if db.opts.ReadOnly {
+		return fmt.Errorf("%w: the store uses file format 1 and needs upgrading first (xkv upgrade)", ErrReadOnly)
+	}
+	_, err := db.compact(ctx, CompactOptions{}, true)
+	return err
+}
+
+func (db *DB) compact(ctx context.Context, opts CompactOptions, keepAll bool) (CompactStats, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -55,7 +80,7 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 		return CompactStats{}, ErrReadOnly
 	}
 	st := CompactStats{RevisionsBefore: len(db.revs), BytesBefore: db.end}
-	keep, causeOnly, err := db.markLive(ctx, opts)
+	keep, causeOnly, err := db.markLive(ctx, opts, keepAll)
 	if err != nil {
 		db.mu.RUnlock()
 		return st, err
@@ -86,7 +111,7 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 			}
 		}
 	}
-	h, err := newHeader()
+	h, err := db.hdr.rewrite()
 	if err != nil {
 		db.mu.RUnlock()
 		return st, err
@@ -188,6 +213,7 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 	}
 	db.hdr = h
 	db.keys = map[string]*keyState{}
+	db.origins = map[ident]uint64{}
 	db.revs = db.revs[:0:0]
 	lastRev, lastTx := db.lastRev, db.lastTx
 	size, err := db.st.Size()
@@ -196,7 +222,7 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 		db.st.Close()
 		return st, err
 	}
-	res, err := scan(db.st, size, headerSize, 0, 0, db.addRev)
+	res, err := scan(db.st, size, h.size(), 0, 0, db.addRev)
 	if err != nil || res.end != size || res.corrupt != "" {
 		db.closed = true
 		db.st.Close()
@@ -221,7 +247,14 @@ func (db *DB) Compact(ctx context.Context, opts CompactOptions) (CompactStats, e
 // markLive returns the set of revisions to keep, and how many of them are
 // kept only because a kept revision points at them. Called with mu held for
 // reading.
-func (db *DB) markLive(ctx context.Context, opts CompactOptions) (map[uint64]bool, int, error) {
+func (db *DB) markLive(ctx context.Context, opts CompactOptions, keepAll bool) (map[uint64]bool, int, error) {
+	if keepAll {
+		keep := make(map[uint64]bool, len(db.revs))
+		for _, m := range db.revs {
+			keep[m.rev] = true
+		}
+		return keep, 0, nil
+	}
 	keepLast := opts.KeepLast
 	if keepLast < 1 {
 		keepLast = 1

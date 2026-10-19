@@ -9,9 +9,10 @@ started.
 
 It's one file and one Go package with no dependencies. There's an `xkv`
 command for the shell, a small HTTP mode for other languages, and a
-WebAssembly build that runs in a browser.
+WebAssembly build that runs in a browser. Two stores can swap changes
+through exchange files, and the reasons and causes travel with the values.
 
-Version 0.1.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
+Version 0.2.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
 
 - [Why a store should remember why](#why-a-store-should-remember-why)
 - [Quick start](#quick-start)
@@ -19,6 +20,7 @@ Version 0.1.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
 - [Causes](#causes)
 - [Reading the past](#reading-the-past)
 - [Compaction](#compaction)
+- [Exchange between stores](#exchange-between-stores)
 - [The xkv command](#the-xkv-command)
 - [HTTP mode](#http-mode)
 - [In the browser](#in-the-browser)
@@ -113,7 +115,9 @@ tree.WriteText(os.Stdout)                        // printed like the xkv command
 ```
 
 A `Revision` carries `Rev`, `Tx`, `Key`, `Value`, `Deleted`, `Actor`,
-`Reason`, `Ref`, `Causes` and `Time`.
+`Reason`, `Ref`, `Causes` and `Time`. An imported one also has `Origin`,
+where it was first written, and `History` when it was imported for the
+record only (see [Exchange between stores](#exchange-between-stores)).
 
 ### Transactions
 
@@ -205,6 +209,56 @@ on while it runs; writes wait. On Windows a file can't be renamed over while
 another process has it open, so there compaction fails with nothing changed
 while a reader holds the file; run it again once the reader has closed.
 
+## Exchange between stores
+
+Two stores can swap changes: a service and its staging copy, two sites
+that each take local writes, a laptop and a server. `Export` writes the
+changes above a revision number as an exchange file; `Import` adds them to
+another store. Each change keeps its actor, reason, ref, time and causes, so
+`Why` gives the same chain on both sides.
+
+```sh
+xkv export site-a.xkv --since 120 --out a-changes.xkvx
+xkv import site-b.xkv a-changes.xkvx --reason "nightly sync from site A"
+```
+
+```go
+var buf bytes.Buffer
+st, err := a.Export(ctx, &buf, xkv.ExportOptions{Since: lastThrough})
+rep, err := b.Import(ctx, &buf, xkv.ImportOptions{}, xkv.Reason("nightly sync from site A"))
+lastThrough = st.Through // send only what's new next time
+```
+
+How it fits together:
+
+- **Identity.** Every store has an id, and every revision keeps the id of
+  the store it was first written to and its number there, however many
+  times it moves. So importing the same file twice changes nothing, a
+  store's own changes coming back are recognised, and causes land on the
+  right revisions.
+- **Whole chains.** An export also carries the older revisions its changes
+  reach through causes. They arrive as history: `Why` follows them, but they
+  never become a key's value.
+- **Conflicts kept.** When both stores changed a key since they last
+  exchanged, nothing is dropped. The other side's change goes into the
+  key's history, and the import writes a resolution revision that names
+  both as its causes. By default the later change wins (`newest`), and both
+  stores pick the same one, so stores that exchange both ways end up alike.
+  `--conflicts ours` or `theirs` choose a side instead. If both sides made
+  the same change, there's nothing to settle.
+- **Checked first.** The whole file is read and checked (its end line
+  carries a count and a SHA-256) before anything is written. A cut or
+  changed file is refused whole. Each transaction in the file is imported
+  as one transaction, so an import killed part-way can simply be run again.
+
+[docs/exchange.md](docs/exchange.md) describes the file line by line.
+
+Exchange needs a store in file format 2, new in 0.2. Stores made by 0.1
+still open and work as before. `xkv upgrade FILE` (or `db.Upgrade`) rewrites
+one as format 2, keeping every revision and its number, and `Export` and
+`Import` do it on their own for a writable store. xkv 0.1 can't open a
+format 2 file.
+
 ## The xkv command
 
 | Command | Does |
@@ -220,6 +274,9 @@ while a reader holds the file; run it again once the reader has closed.
 | `xkv check FILE` | read every record and every cause |
 | `xkv compact FILE [--keep N] [--keep-days D]` | compact |
 | `xkv repair FILE` | trim a damaged file back to its last good transaction |
+| `xkv export FILE [--since REV] [--out PATH]` | the changes above REV as an exchange file |
+| `xkv import FILE EXCHANGE --reason R [--conflicts newest\|ours\|theirs]` | add an exchange file's changes (`-` reads standard input) |
+| `xkv upgrade FILE` | rewrite a 0.1 store as file format 2 |
 | `xkv serve FILE [--addr HOST:PORT]` | HTTP mode |
 
 Most commands take `--json`. Writes need a reason unless `--relaxed` is
@@ -270,6 +327,10 @@ It promises:
   refuses further writes with `ErrFailed` until it is reopened, so it never
   carries on from a state it can't vouch for.
 - **Compaction never breaks a chain.** See above.
+- **An exchange loses nothing.** An import keeps every change it brings,
+  conflicting ones as history beside the resolution, and a file that is cut
+  or changed is refused before anything is written. Importing twice changes
+  nothing.
 - **Revision numbers only go up**, also across compaction.
 
 It doesn't:
@@ -281,7 +342,8 @@ It doesn't:
   Run `xkv serve` for many writers. The lock is `flock` on Unix and
   `LockFileEx` on Windows; on platforms with neither (Solaris, AIX, the
   browser) nothing stops two writers, so don't start two.
-- **replicate, sync or authenticate.** The HTTP mode is for localhost.
+- **sync on its own or authenticate.** Exchange moves files you pass it;
+  when and where they go is up to you. The HTTP mode is for localhost.
 - **scale to huge data.** The index of every revision lives in memory,
   roughly 70 bytes per revision. Values belong in the store; big blobs
   don't.
@@ -315,7 +377,28 @@ The numbers here come from [test/results](test/results), written by
   before and no work file was left behind.
 - **Two processes.** A second writer gets `ErrLocked`; a read-only open
   works; the lock dies with the process.
-- **Fuzzing.** Arbitrary bytes as a store file, and as records, never panic.
+- **Exchange, both ways.** {{TW_SEEDS}} pairs of stores took random writes
+  on both sides, exchanged both ways at random and compacted now and then:
+  {{TW_REVS}} revisions, {{TW_CONFLICTS}} conflicts settled and
+  {{TW_AGREED}} changes both sides had made alike. Every pair settled to
+  the same values, and without compaction each store held every revision
+  the other did.
+- **Exchange, one way.** Over {{INC_ROUNDS}} rounds of incremental exports,
+  the importing store gave the same values and the same `Why` trees as the
+  source after every round.
+- **Killed during an import.** {{KI_RUNS}} kills landed at random points of
+  an import of {{KI_REVS}} revisions with {{KI_CONFLICTS}} conflicts;
+  {{KI_PARTIAL}} of them part-way. Every time the file checked out, and
+  importing again ended with the values of a clean import and nothing
+  imported twice.
+- **Bad exchange files.** An export cut at every byte, and {{MUT_RUNS}}
+  copies with a few bytes changed, dropped or added, were all refused whole,
+  with nothing written.
+- **Format 1 stores.** A file written by xkv 0.1 opens, answers as before,
+  takes writes, and upgrades to format 2 with every revision and its number
+  kept.
+- **Fuzzing.** Arbitrary bytes as a store file, as records, and as an
+  exchange file never panic.
 - **A million revisions.** One million revisions over ten thousand keys were
   written in 5.0 s with an fsync per 100-write transaction, into a 124 MB
   file. `Get` took 2.0 µs and `Why` 16 levels deep 87 µs. The file opened in

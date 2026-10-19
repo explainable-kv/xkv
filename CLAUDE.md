@@ -7,14 +7,23 @@ and the site; the owner does not.
 
 ## Where the next session starts
 
-v0.1.0 is the first release: the store, the xkv command with its HTTP mode,
+v0.1.0 was the first release: the store, the xkv command with its HTTP mode,
 the WebAssembly build for the site demo, and four case-study examples.
 
-Next, once agreed with the owner (the plan goes here only after he approves
-it): nothing is scheduled. Candidates from the original plan are v0.2
-Exchange (export changes since a checkpoint as a file that carries reasons and
-causes; import with conflicts kept) and v0.3 Watch (a stream of new
-revisions).
+The plan the owner approved on Oct 19 2026 ("do both"):
+
+1. v0.2.0 Exchange: export the changes since a revision as an exchange file
+   that carries reasons, actors, refs, times and causes; import them into
+   another store, with conflicts kept and settled by a resolution revision.
+   Needs file format 2 (a store id in the header, an origin on imported
+   revisions, history-only revisions). See docs/exchange.md.
+2. v0.3.0 Watch: a stream of new revisions (`Watch` in Go, `xkv watch`, a
+   streaming HTTP endpoint), with a correct answer when the starting
+   revision was compacted away; the site demo shows changes arriving.
+
+Each ships like 0.1.0: tests aimed at its promises, an independent review,
+a fresh recording, the automated release, a site post and a note on
+softdevstudio.com. Nothing is planned after 0.3.0 until the owner decides.
 
 ## Rules
 
