@@ -92,6 +92,10 @@ func writeOpts(reason, actor, causes, ref string) ([]xkv.WriteOption, error) {
 }
 
 func reset() error {
+	if db != nil {
+		// Ends a watch on it, even one in the middle of a batch.
+		db.Close()
+	}
 	var err error
 	db, err = xkv.OpenMemory(nil)
 	return err
@@ -138,7 +142,7 @@ func main() {
 			return result(map[string]any{"keys": s.Keys, "live_keys": s.LiveKeys, "revisions": s.Revisions, "last_rev": s.LastRev}, err)
 		}),
 		"watch": js.FuncOf(func(_ js.Value, a []js.Value) any {
-			if len(a) < 2 || a[1].Type() != js.TypeFunction {
+			if len(a) < 2 || a[1].Type() != js.TypeFunction || a[0].Type() != js.TypeNumber || a[0].Float() < 0 {
 				return result(nil, xkv.ErrInvalid)
 			}
 			unwatch()

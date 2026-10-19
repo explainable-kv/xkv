@@ -36,6 +36,9 @@ func cmdWatch(args []string, stdout io.Writer) error {
 		if count, err = parseUint("count", p.str("count")); err != nil {
 			return err
 		}
+		if count == 0 {
+			return usageError{"--count takes a number of revisions, 1 or more"}
+		}
 	}
 	db, err := openRead(p.pos[0])
 	if err != nil {

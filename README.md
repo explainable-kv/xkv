@@ -299,6 +299,13 @@ err := db.Watch(ctx, xkv.WatchOptions{Since: st.LastRev, Prefix: "config/"}, fun
 - **Honest about gaps.** If compaction removed revisions a watcher hadn't
   reached, `Watch` stops with `ErrCompacted` and says which ones, instead
   of skipping them quietly. `SkipCompacted` carries on with what's left.
+  The store can't tell what removed revisions held, so a watcher with a
+  `Prefix` is told about any gap, whatever its keys.
+- **Another store at the path.** If the file a read-only handle follows is
+  replaced by a different store (recreated, or restored from another
+  store), `Watch` stops with `ErrReplaced` rather than mixing up two
+  stores' revision numbers. A read caught in the middle of a write is
+  tried again on the next few polls before `Watch` gives up.
 
 `fn` holds no lock, so it may read from the store and write to it.
 
@@ -321,7 +328,7 @@ err := db.Watch(ctx, xkv.WatchOptions{Since: st.LastRev, Prefix: "config/"}, fun
 | `xkv import FILE EXCHANGE [--conflicts newest\|ours\|theirs]` | add an exchange file's changes (`-` reads standard input) |
 | `xkv upgrade FILE` | rewrite a 0.1 store as file format 2 |
 | `xkv new-id FILE --keep-through REV` | give a copied store file its own store id |
-| `xkv watch FILE [--since REV \| --all] [--prefix P] [--count N]` | print revisions as they are written (new ones only by default) |
+| `xkv watch FILE [--since REV \| --all] [--prefix P] [--count N] [--json]` | print revisions as they are written (new ones only by default) |
 | `xkv serve FILE [--addr HOST:PORT]` | HTTP mode |
 
 Most commands take `--json`. Writes need a reason unless `--relaxed` is

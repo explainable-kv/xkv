@@ -22,13 +22,16 @@ const Version = "0.2.0"
 
 // Errors returned by the store. Check them with errors.Is.
 var (
-	ErrNotFound   = errors.New("xkv: not found")
-	ErrNoReason   = errors.New("xkv: a reason is required (strict mode)")
-	ErrBadCause   = errors.New("xkv: bad cause")
-	ErrCompacted  = errors.New("xkv: revision was removed by compaction")
-	ErrLocked     = errors.New("xkv: file is open for writing by another handle")
-	ErrReadOnly   = errors.New("xkv: store is read-only")
-	ErrClosed     = errors.New("xkv: store is closed")
+	ErrNotFound  = errors.New("xkv: not found")
+	ErrNoReason  = errors.New("xkv: a reason is required (strict mode)")
+	ErrBadCause  = errors.New("xkv: bad cause")
+	ErrCompacted = errors.New("xkv: revision was removed by compaction")
+	ErrLocked    = errors.New("xkv: file is open for writing by another handle")
+	ErrReadOnly  = errors.New("xkv: store is read-only")
+	ErrClosed    = errors.New("xkv: store is closed")
+	// ErrReplaced: a read-only handle found another store at its path
+	// (see Refresh).
+	ErrReplaced   = errors.New("xkv: the file now holds a different store")
 	ErrCorrupt    = errors.New("xkv: file is damaged")
 	ErrTooLarge   = errors.New("xkv: write is too large")
 	ErrInvalid    = errors.New("xkv: invalid argument")

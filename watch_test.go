@@ -179,10 +179,13 @@ func TestWatchCompacted(t *testing.T) {
 	}
 	gate := make(chan struct{})
 	res := make(chan error, 1)
+	var seenMu sync.Mutex
 	var seen []uint64
 	go func() {
 		res <- db2.Watch(bg, WatchOptions{}, func(r Revision) error {
+			seenMu.Lock()
 			seen = append(seen, r.Rev)
+			seenMu.Unlock()
 			if r.Rev == 1 {
 				<-gate
 			}
@@ -200,6 +203,8 @@ func TestWatchCompacted(t *testing.T) {
 		t.Fatalf("watch stopped: %v (saw %v)", err, seen)
 	case <-time.After(50 * time.Millisecond):
 	}
+	seenMu.Lock()
+	defer seenMu.Unlock()
 	if len(seen) != 6 {
 		t.Fatalf("saw %v", seen)
 	}

@@ -513,7 +513,7 @@ func TestHTTPWatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if l = strings.TrimSpace(l); l != "" {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "retry:") {
 			event = append(event, l)
 		}
 	}

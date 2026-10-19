@@ -5,6 +5,7 @@ package xkv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -64,6 +65,7 @@ func (db *DB) Watch(ctx context.Context, opts WatchOptions, fn func(Revision) er
 	}
 	follow := db.opts.ReadOnly && db.path != ""
 	pos := opts.Since
+	failures := 0 // Refresh errors in a row
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -74,6 +76,13 @@ func (db *DB) Watch(ctx context.Context, opts WatchOptions, fn func(Revision) er
 		}
 		for _, r := range batch {
 			if strings.HasPrefix(r.Key, opts.Prefix) {
+				// fn may have cancelled the watch or closed the store.
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if db.isClosed() {
+					return ErrClosed
+				}
 				if err := fn(r); err != nil {
 					return err
 				}
@@ -89,8 +98,15 @@ func (db *DB) Watch(ctx context.Context, opts WatchOptions, fn func(Revision) er
 				return ctx.Err()
 			case <-wake:
 			case <-time.After(poll):
+				// A read can catch the writer part-way through a write, or
+				// a file part-way through being replaced: give a failed
+				// Refresh a few more polls before giving up.
 				if err := db.Refresh(); err != nil {
-					return err
+					if failures++; failures >= refreshTries || errors.Is(err, ErrClosed) || errors.Is(err, ErrReplaced) {
+						return err
+					}
+				} else {
+					failures = 0
 				}
 			}
 			continue
@@ -149,6 +165,16 @@ func (db *DB) watchGap(pos uint64) bool {
 	return db.revs[len(db.revs)-1].rev <= pos
 }
 
+// refreshTries is how many Refresh failures in a row end a following Watch.
+const refreshTries = 5
+
+// isClosed reports whether the store was closed.
+func (db *DB) isClosed() bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.closed
+}
+
 // changed wakes every Watch. Called with mu held for writing.
 func (db *DB) changed() {
 	close(db.notify)
@@ -158,8 +184,11 @@ func (db *DB) changed() {
 // Refresh brings a read-only handle up to date with what another process
 // has committed to the file since it was opened or last refreshed: new
 // transactions are added, and if the file was replaced by a compaction it is
-// opened again. Half-written transactions at the end are left for later. On
-// a writable handle, which sees its own writes already, it does nothing.
+// opened again. Half-written transactions at the end are left for later. If
+// another store now lives at the path (the file was recreated, or restored
+// from another store), Refresh returns an error wrapping ErrReplaced and the
+// handle keeps what it had. On a writable handle, which sees its own writes
+// already, it does nothing.
 func (db *DB) Refresh() error {
 	if !db.opts.ReadOnly || db.path == "" {
 		return nil
@@ -180,8 +209,9 @@ func (db *DB) Refresh() error {
 	if err != nil {
 		return err
 	}
-	if !os.SameFile(fi, pi) {
-		// Compacted (or replaced) by the writer: read the new file.
+	// A new file (compacted by the writer, or replaced), or one that had
+	// no header yet when this handle opened it: read it whole.
+	if !os.SameFile(fi, pi) || db.end < db.hdr.size() || db.hdr.version == 0 {
 		n := newDB(&db.opts)
 		n.path = db.path
 		f, err := os.Open(db.path)
@@ -192,6 +222,13 @@ func (db *DB) Refresh() error {
 		if err := n.load(true); err != nil {
 			f.Close()
 			return err
+		}
+		if db.hdr.version >= 2 && n.hdr.version >= 2 && n.hdr.store != db.hdr.store {
+			// Another store now lives at this path (recreated, restored
+			// from another store's backup, or given a new id): following
+			// it would mix two stores' revision numbers.
+			f.Close()
+			return fmt.Errorf("%w: %s now holds store %s, not %s", ErrReplaced, db.path, n.hdr.store, db.hdr.store)
 		}
 		db.st.Close()
 		db.file, db.st, db.hdr = n.file, n.st, n.hdr

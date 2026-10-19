@@ -27,8 +27,21 @@ globalThis.xkvReady = () => {
     setTimeout(() => {
       const keys = seen.map((r) => r.key).join(',');
       if (keys !== 'chargeback:cb_991,risk:42:score,account:42:limit') fail('watch saw ' + keys);
-      console.log('wasm smoke passed: xkv ' + x.version);
-      process.exit(0);
+      if (!p(x.watch(-1, () => {})).error) fail('watch from -1 was accepted');
+      // unwatch, or reset, inside the callback stops the deliveries at once.
+      let n = 0;
+      p(x.watch(0, () => { n++; x.unwatch(); }));
+      setTimeout(() => {
+        if (n !== 1) fail('calls after unwatch in the callback: ' + (n - 1));
+        let q = 0;
+        p(x.watch(0, () => { q++; x.reset(); }));
+        setTimeout(() => {
+          if (q !== 1) fail('calls after reset in the callback: ' + (q - 1));
+          if (p(x.stats()).ok.revisions !== 0) fail('reset left revisions');
+          console.log('wasm smoke passed: xkv ' + x.version);
+          process.exit(0);
+        }, 50);
+      }, 50);
     }, 50);
   }, 50);
 };

@@ -348,14 +348,28 @@ func fail(w http.ResponseWriter, status int, msg string) {
 // text/event-stream. The stream starts at once; an error (such as
 // revisions compacted away before the watch reached them) ends it with an
 // {"error": ...} line, or an "error" event.
+// watchWriteTimeout is how long one write to a watch stream may take.
+const watchWriteTimeout = time.Minute
+
 func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	opts := xkv.WatchOptions{Prefix: q.Get("prefix")}
+	all := q.Get("all") == "1" || q.Get("all") == "true"
+	since := q.Get("since")
+	// A browser's EventSource reconnects on its own and says where it got
+	// to: that wins over the URL, so nothing is missed or sent twice.
+	if id := r.Header.Get("Last-Event-ID"); id != "" {
+		since, all = id, false
+	}
+	if all && since != "" {
+		fail(w, http.StatusBadRequest, "all and since don't go together")
+		return
+	}
 	switch {
-	case q.Get("all") == "1" || q.Get("all") == "true":
+	case all:
 		opts.SkipCompacted = true
-	case q.Get("since") != "":
-		v, err := strconv.ParseUint(q.Get("since"), 10, 64)
+	case since != "":
+		v, err := strconv.ParseUint(since, 10, 64)
 		if err != nil {
 			fail(w, http.StatusBadRequest, "since takes a revision number")
 			return
@@ -381,12 +395,24 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	if sse {
+		// How long a browser waits before reconnecting.
+		io.WriteString(w, "retry: 3000\n\n")
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
+	// A client that stops reading must not hold the stream open for ever:
+	// each write gets a deadline.
+	rc := http.NewResponseController(w)
+	deadline := func() { rc.SetWriteDeadline(time.Now().Add(watchWriteTimeout)) }
 	ctx, cancel := context.WithCancel(r.Context())
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	defer cancel()
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		t := time.NewTicker(15 * time.Second)
 		defer t.Stop()
 		for {
@@ -395,6 +421,11 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 				return
 			case <-t.C:
 				mu.Lock()
+				if ctx.Err() != nil {
+					mu.Unlock()
+					return
+				}
+				deadline()
 				if sse {
 					io.WriteString(w, ": keep-alive\n\n")
 				} else {
@@ -414,6 +445,7 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		deadline()
 		if sse {
 			_, err = fmt.Fprintf(w, "id: %d\ndata: %s\n\n", rev.Rev, b)
 		} else {
@@ -430,8 +462,10 @@ func serveWatch(db *xkv.DB, w http.ResponseWriter, r *http.Request) {
 	b, _ := json.Marshal(map[string]string{"error": err.Error()})
 	mu.Lock()
 	defer mu.Unlock()
+	deadline()
 	if sse {
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n", b)
+		// Named so it can't be taken for EventSource's own "error" event.
+		fmt.Fprintf(w, "event: xkv-error\ndata: %s\n\n", b)
 	} else {
 		w.Write(append(b, '\n'))
 	}
