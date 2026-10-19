@@ -626,7 +626,7 @@ func TestR3SeenListOverflowsMaxRecord(t *testing.T) {
 		if i > 0 {
 			sj.WriteString(",")
 		}
-		fmt.Fprintf(&sj, `"%s":%d`, s, 1<<40+i)
+		fmt.Fprintf(&sj, `"%s":%d`, s, uint64(1)<<40+uint64(i))
 	}
 	sj.WriteString(`}`)
 	src := strings.Repeat("a", 32)
