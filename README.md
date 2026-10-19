@@ -201,7 +201,9 @@ stats, err := db.Compact(ctx, xkv.CompactOptions{KeepLast: 10, KeepSince: time.N
 
 Compaction writes a new file next to the old one and renames it over the
 original, so a compaction cut short leaves the old file whole. Reads carry
-on while it runs; writes wait.
+on while it runs; writes wait. On Windows a file can't be renamed over while
+another process has it open, so there compaction fails with nothing changed
+while a reader holds the file; run it again once the reader has closed.
 
 ## The xkv command
 

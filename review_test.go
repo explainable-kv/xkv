@@ -35,8 +35,13 @@ func TestOpenRacingCompaction(t *testing.T) {
 		fired = true
 		// Between the second Open's OpenFile and its lock: compact, then
 		// let go of the file.
-		if _, err := first.Compact(bg, CompactOptions{}); err != nil {
+		// Windows can't rename over a file another handle has open, so
+		// there compaction refuses and changes nothing, and the race can't
+		// happen.
+		if _, err := first.Compact(bg, CompactOptions{}); err != nil && runtime.GOOS != "windows" {
 			t.Error(err)
+		} else if err != nil {
+			t.Log(err)
 		}
 		first.Close()
 	}
