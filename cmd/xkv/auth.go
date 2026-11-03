@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -70,14 +71,16 @@ func isLoopback(addr string) bool {
 }
 
 // requireToken wraps h so every request must carry Authorization: Bearer
-// with the write token, or with the read token for GET and HEAD. Both
-// comparisons always run, in constant time, so timing says nothing about
-// which token, if either, came close.
+// with the write token, or with the read token for GET and HEAD. Digests of
+// equal length are compared, both comparisons always run, in constant time,
+// so timing says nothing about either token, its length included.
 func requireToken(h http.Handler, write, read string) http.Handler {
+	wd, rd := sha256.Sum256([]byte(write)), sha256.Sum256([]byte(read))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := bearer(r.Header.Get("Authorization"))
-		isWrite := ok && write != "" && subtle.ConstantTimeCompare([]byte(got), []byte(write)) == 1
-		isRead := ok && read != "" && subtle.ConstantTimeCompare([]byte(got), []byte(read)) == 1
+		gd := sha256.Sum256([]byte(got))
+		isWrite := subtle.ConstantTimeCompare(gd[:], wd[:]) == 1 && ok && write != ""
+		isRead := subtle.ConstantTimeCompare(gd[:], rd[:]) == 1 && ok && read != ""
 		switch {
 		case isWrite:
 		case isRead && (r.Method == http.MethodGet || r.Method == http.MethodHead):
@@ -95,10 +98,9 @@ func requireToken(h http.Handler, write, read string) http.Handler {
 
 // bearer takes the token from an Authorization header value.
 func bearer(v string) (string, bool) {
-	scheme, token, ok := strings.Cut(v, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
+	f := strings.Fields(v)
+	if len(f) != 2 || !strings.EqualFold(f[0], "Bearer") {
 		return "", false
 	}
-	token = strings.TrimLeft(token, " ")
-	return token, token != ""
+	return f[1], true
 }

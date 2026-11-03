@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -138,7 +139,7 @@ func TestPROV(t *testing.T) {
 	}
 	// Agents once each, sorted, after the rest.
 	for _, a := range []string{"ci", "ops-bot", "sam"} {
-		if nodes[AgentIRI(a)]["prov:label"] != a {
+		if nodes[AgentIRI(a)]["rdfs:label"] != a {
 			t.Fatalf("agent %s missing", a)
 		}
 	}
@@ -147,6 +148,55 @@ func TestPROV(t *testing.T) {
 	}
 	if !strings.HasPrefix(nodes[rev(5)]["prov:generatedAtTime"].(map[string]any)["@type"].(string), "xsd:dateTime") {
 		t.Fatal("time not typed")
+	}
+}
+
+// One transaction can carry writes by different actors, and a write can name
+// a revision from its own transaction as a cause.
+func TestPROVMixedTransaction(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "m.xkv"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.Update(ctx, func(tx *Tx) error {
+		if _, err := tx.Put("a", []byte("1"), Reason("first"), Actor("alice")); err != nil {
+			return err
+		}
+		_, err := tx.Put("b", []byte("2"), Reason("follows a"), Actor("bob"), CauseLatest("a"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Put(ctx, "b", []byte("3"), Reason("again"), Actor("bob")); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := db.StoreID()
+	n, err := db.WhyRev(ctx, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := n.PROV(id)
+	nodes := provNodes(t, b)
+	a1 := nodes[TransactionIRI(id, 1)]
+	agents := ids(a1["prov:wasAssociatedWith"])
+	sort.Strings(agents)
+	if got := strings.Join(agents, " "); got != AgentIRI("alice")+" "+AgentIRI("bob") {
+		t.Fatalf("tx 1 agents: %s", got)
+	}
+	if a1["prov:used"] != nil {
+		t.Fatalf("tx 1 used what it generated: %v", a1["prov:used"])
+	}
+	if got := ids(nodes[RevisionIRI(id, 2)]["prov:wasDerivedFrom"]); len(got) != 1 || got[0] != RevisionIRI(id, 1) {
+		t.Fatalf("derivation lost: %v", got)
+	}
+	// The previous value of b@3 is shown without its causes, and says so.
+	n, _ = db.Why(ctx, "b", 0)
+	b, _ = n.PROV(id)
+	nodes = provNodes(t, b)
+	if nodes[RevisionIRI(id, 2)]["xkv:causesNotShown"] != true {
+		t.Fatalf("prev: %v", nodes[RevisionIRI(id, 2)])
 	}
 }
 

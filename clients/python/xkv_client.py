@@ -102,9 +102,11 @@ class Client:
             raw = e.read()
             try:
                 j = json.loads(raw)
-                raise XkvError(e.code, j.get("error", raw.decode("utf-8", "replace")), j if j.get("partial") else None) from None
             except ValueError:
-                raise XkvError(e.code, raw.decode("utf-8", "replace").strip() or e.reason) from None
+                j = None
+            if isinstance(j, dict) and isinstance(j.get("error"), str):
+                raise XkvError(e.code, j["error"], j if j.get("partial") else None) from None
+            raise XkvError(e.code, raw.decode("utf-8", "replace").strip() or str(e.reason)) from None
         except (urllib.error.URLError, OSError) as e:
             raise XkvError(0, str(getattr(e, "reason", e))) from None
         if stream:
@@ -118,9 +120,14 @@ class Client:
 
     @staticmethod
     def _key(key):
+        # Every character but unreserved ones is percent-encoded, "/" too, so
+        # dot and empty segments reach the server as part of the key rather
+        # than being resolved away on the path.
         if not key:
             raise ValueError("empty key")
-        return urllib.parse.quote(key, safe="/")
+        if key in (".", ".."):
+            raise ValueError("the keys . and .. can't be reached over HTTP")
+        return urllib.parse.quote(key, safe="")
 
     @staticmethod
     def _write_body(value, reason, causes, actor, ref):
@@ -208,16 +215,23 @@ class Client:
         if all and since is not None:
             raise ValueError("all and since don't go together")
         last = since
-        first = True
+        if last is None and not all:
+            # "New ones only" means after the revision current now, fixed
+            # here so a reconnect before the first revision misses nothing.
+            last = self.stats()["last_rev"]
         while True:
             params = {"prefix": prefix}
-            if first and all:
+            headers = {"Accept": "application/x-ndjson"}
+            if all:
+                # all keeps skipping what compaction removed; where it got
+                # to goes in Last-Event-ID, which the server takes with all.
                 params["all"] = True
-            elif last is not None:
+                if last is not None:
+                    headers["Last-Event-ID"] = str(last)
+            else:
                 params["since"] = last
-            first = False
             try:
-                resp = self._request("GET", "/v1/watch", params, headers={"Accept": "application/x-ndjson"}, stream=True, timeout=120)
+                resp = self._request("GET", "/v1/watch", params, headers=headers, stream=True, timeout=120)
                 with resp:
                     for line in resp:
                         line = line.strip()
@@ -225,7 +239,7 @@ class Client:
                             continue  # keep-alive
                         msg = json.loads(line)
                         if "error" in msg:
-                            raise XkvError(410, msg["error"])
+                            raise XkvError(410 if "compact" in msg["error"] else 500, msg["error"])
                         last = msg["rev"]
                         yield msg
             except XkvError as e:

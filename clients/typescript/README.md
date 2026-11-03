@@ -45,4 +45,9 @@ removed revisions it hadn't sent. Browsers can't send the Authorization
 header with `EventSource`, which is why `watch` reads the JSON-lines stream
 with `fetch` instead.
 
+To trust a private certificate authority, pass a `fetch` that uses it (in
+Node, for example, one built on undici's `Agent` with your CA), or set
+`NODE_EXTRA_CA_CERTS` when starting Node. `watch` reconnects when nothing
+arrives for 60 seconds (`idleMs`); the server sends a keep-alive every 15.
+
 Build and test: `npm ci && npx tsc -p tsconfig.json && XKV_BIN=path/to/xkv node --test test.mjs`.

@@ -40,8 +40,11 @@ class Server:
             os.close(fd)
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        self.proc = subprocess.Popen([XKV, "serve", self.file, "--addr", f"127.0.0.1:{self.port}", "--token-file", wf, "--read-token-file", rf],
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.args = [XKV, "serve", self.file, "--addr", f"127.0.0.1:{self.port}", "--token-file", wf, "--read-token-file", rf]
+        self.start()
+
+    def start(self):
+        self.proc = subprocess.Popen(self.args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         line = self.proc.stdout.readline()
         if "serving" not in line:
             raise RuntimeError("serve did not start: " + line + self.proc.stderr.read())
@@ -49,6 +52,8 @@ class Server:
     def stop(self):
         self.proc.terminate()
         self.proc.wait(10)
+        self.proc.stdout.close()
+        self.proc.stderr.close()
 
 
 class ClientTest(unittest.TestCase):
@@ -101,6 +106,45 @@ class ClientTest(unittest.TestCase):
         r = db.put("blob/a b?c#d", b"\xff\x00\x01", reason="binary")
         self.assertEqual(value_bytes(db.get("blob/a b?c#d")), b"\xff\x00\x01")
         self.assertEqual(r["key"], "blob/a b?c#d")
+
+    def test_keys_with_dot_and_empty_segments(self):
+        db = self.client()
+        db.put("real", "untouched", reason="setup")
+        for key in ("zz/../real", "q/./x", "x//y", "/lead", "trail/", "a%2Fb"):
+            r = db.put(key, "v:" + key, reason="odd key")
+            self.assertEqual(r["key"], key)
+            self.assertEqual(db.get(key)["value"], "v:" + key)
+        self.assertEqual(db.get("real")["value"], "untouched")
+        for bad in (".", ".."):
+            with self.assertRaises(ValueError):
+                db.get(bad)
+
+    def test_watch_reconnect_before_first_revision(self):
+        # A server restart between starting watch and the first revision
+        # must not lose what was written meanwhile.
+        s = Server(self.tmp.name, "w")
+        try:
+            db = Client(s.url, token=s.write)
+            it = Client(s.url, token=s.read).watch(prefix="w/", retry_seconds=0.2)
+            got = []
+
+            def writer():
+                time.sleep(0.5)
+                s.stop()
+                subprocess.run([XKV, "put", s.file, "w/k", "while-down", "--reason", "cli"], check=True, capture_output=True)
+                s.start()
+                db.put("w/k", "after", reason="http")
+
+            # The loop below starts the generator, which fixes "new ones
+            # only" at once, well before the writer stops the server.
+            threading.Thread(target=writer).start()
+            for rev in it:
+                got.append(rev["value"])
+                if len(got) == 2:
+                    break
+            self.assertEqual(got, ["while-down", "after"])
+        finally:
+            s.stop()
 
     def test_errors(self):
         db = self.client()

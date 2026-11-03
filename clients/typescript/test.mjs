@@ -36,8 +36,11 @@ before(async () => {
   });
 });
 
-after(() => {
+after(async () => {
+  // Wait for serve to exit before removing its directory.
+  const exited = new Promise((res) => proc.once("exit", res));
   proc.kill();
+  await exited;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -70,6 +73,18 @@ test("bytes and keys that need escaping", async () => {
   const r = await db.put("blob/a b?c#d", new Uint8Array([255, 0, 1]), { reason: "binary" });
   assert.equal(r.key, "blob/a b?c#d");
   assert.deepEqual([...valueBytes(await db.get("blob/a b?c#d"))], [255, 0, 1]);
+});
+
+test("keys with dot and empty segments stay as given", async () => {
+  const db = new Client(url, { token: write });
+  await db.put("real", "untouched", { reason: "setup" });
+  for (const key of ["zz/../real", "q/./x", "x//y", "/lead", "trail/", "a%2Fb"]) {
+    const r = await db.put(key, "v:" + key, { reason: "odd key" });
+    assert.equal(r.key, key);
+    assert.equal((await db.get(key)).value, "v:" + key);
+  }
+  assert.equal((await db.get("real")).value, "untouched");
+  for (const bad of [".", ".."]) assert.throws(() => db.get(bad));
 });
 
 test("errors", async () => {

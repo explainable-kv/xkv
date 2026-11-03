@@ -44,11 +44,18 @@ function toBase64(b) {
         s += String.fromCharCode(b[i]);
     return btoa(s);
 }
+// keyPath percent-encodes the whole key, "/" included, so dot and empty
+// segments reach the server as part of the key instead of being resolved
+// away by URL parsing.
 function keyPath(key) {
     if (!key)
         throw new Error("empty key");
-    return key.split("/").map(encodeURIComponent).join("/");
+    if (key === "." || key === "..")
+        throw new Error("the keys . and .. can't be reached over HTTP");
+    return encodeURIComponent(key);
 }
+/** How long watch waits without a byte (the server sends a keep-alive every 15 s) before reconnecting. */
+const watchIdleMs = 60_000;
 export class Client {
     baseURL;
     token;
@@ -201,16 +208,38 @@ export class Client {
         if (opts.all && opts.since !== undefined)
             throw new Error("all and since don't go together");
         let last = opts.since;
-        let first = true;
+        if (last === undefined && !opts.all) {
+            // "New ones only" means after the revision current now, fixed here so
+            // a reconnect before the first revision misses nothing.
+            last = Number((await this.stats()).last_rev);
+        }
         for (;;) {
             const params = { prefix: opts.prefix };
-            if (first && opts.all)
+            const headers = { Accept: "application/x-ndjson" };
+            if (opts.all) {
+                // all keeps skipping what compaction removed; where it got to goes
+                // in Last-Event-ID, which the server takes together with all.
                 params.all = true;
-            else if (last !== undefined)
+                if (last !== undefined)
+                    headers["Last-Event-ID"] = String(last);
+            }
+            else {
                 params.since = last;
-            first = false;
+            }
+            // One controller per connection: the caller's signal or an idle
+            // connection (a half-open socket sends nothing) aborts it.
+            const ctl = new AbortController();
+            const onAbort = () => ctl.abort();
+            opts.signal?.addEventListener("abort", onAbort, { once: true });
+            let idle;
+            const arm = () => {
+                if (idle !== undefined)
+                    clearTimeout(idle);
+                idle = setTimeout(() => ctl.abort(), opts.idleMs ?? watchIdleMs);
+            };
             try {
-                const resp = await this.request("GET", "/v1/watch", params, undefined, { Accept: "application/x-ndjson" }, opts.signal);
+                arm();
+                const resp = await this.request("GET", "/v1/watch", params, undefined, headers, ctl.signal);
                 if (!resp.body)
                     throw new XkvError(0, "no response body");
                 const reader = resp.body.getReader();
@@ -221,6 +250,7 @@ export class Client {
                         const { done, value } = await reader.read();
                         if (done)
                             break;
+                        arm();
                         buf += decoder.decode(value, { stream: true });
                         let nl;
                         while ((nl = buf.indexOf("\n")) >= 0) {
@@ -230,7 +260,7 @@ export class Client {
                                 continue; // keep-alive
                             const msg = JSON.parse(line);
                             if (typeof msg.error === "string")
-                                throw new XkvError(410, msg.error);
+                                throw new XkvError(msg.error.includes("compact") ? 410 : 500, msg.error);
                             last = msg.rev;
                             yield msg;
                         }
@@ -245,6 +275,11 @@ export class Client {
                     return;
                 if (e instanceof XkvError && e.status !== 0)
                     throw e;
+            }
+            finally {
+                if (idle !== undefined)
+                    clearTimeout(idle);
+                opts.signal?.removeEventListener("abort", onAbort);
             }
             if (opts.signal?.aborted)
                 return;

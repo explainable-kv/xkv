@@ -122,5 +122,6 @@ export declare class Client {
         all?: boolean;
         signal?: AbortSignal;
         retryMs?: number;
+        idleMs?: number;
     }): AsyncGenerator<Revision>;
 }

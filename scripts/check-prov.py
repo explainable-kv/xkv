@@ -19,9 +19,7 @@ from rdflib.namespace import RDF
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 XKV = rdflib.Namespace("https://xkv.org/ns#")
 
-# PROV-O terms xkv may use; anything else under prov: is a mistake.
-PROV_TERMS = {"Entity", "Activity", "Agent", "wasGeneratedBy", "wasAttributedTo", "wasAssociatedWith",
-              "used", "wasDerivedFrom", "wasRevisionOf", "generatedAtTime", "endedAtTime", "value", "label"}
+from rdflib.namespace import PROV as PROV_O  # rdflib's closed list of PROV-O terms
 
 
 def run(xkv, *args):
@@ -59,11 +57,17 @@ def main():
         ((rev(3), PROV.value, rdflib.Literal("150")), "value"),
     ]
     failed = [msg for t, msg in checks if t not in g]
+    def known(term):
+        try:
+            PROV_O[str(term)[len(str(PROV)):]]
+            return True
+        except (AttributeError, KeyError):
+            return False
     for s, p, o in g:
-        if str(p).startswith(str(PROV)) and str(p)[len(str(PROV)):] not in PROV_TERMS:
-            failed.append(f"unknown PROV term {p}")
-        if p == RDF.type and str(o).startswith(str(PROV)) and str(o)[len(str(PROV)):] not in PROV_TERMS:
-            failed.append(f"unknown PROV class {o}")
+        if str(p).startswith(str(PROV)) and not known(p):
+            failed.append(f"not a PROV-O term: {p}")
+        if p == RDF.type and str(o).startswith(str(PROV)) and not known(o):
+            failed.append(f"not a PROV-O class: {o}")
     times = list(g.objects(rev(3), PROV.generatedAtTime))
     if len(times) != 1 or times[0].datatype != rdflib.XSD.dateTime or times[0].toPython() is None:
         failed.append("generatedAtTime is not one xsd:dateTime")

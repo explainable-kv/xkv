@@ -25,7 +25,9 @@ A token file holds one line: the token, at least 32 printable ASCII
 characters with no spaces (a trailing newline is fine). On Unix the file
 must not be readable by group or others (`chmod 600`). Files are read once,
 when serve starts; restart it to change a token. The two tokens must
-differ. Tokens are compared in constant time and never printed or logged.
+differ. Tokens are compared through SHA-256 digests in constant time, and never
+printed or logged. A name such as `localhost` counts as loopback only if
+the address it resolves to is.
 
 Without a token serve answers anyone who can reach it, so it refuses an
 `--addr` other machines can reach (an empty host, `0.0.0.0`, `[::]` or any
