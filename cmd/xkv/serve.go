@@ -81,9 +81,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 	// A name such as localhost was taken as loopback above; check where the
 	// listener really is, in case it resolved elsewhere.
 	if tcp, ok := ln.Addr().(*net.TCPAddr); ok && local && !tcp.IP.IsLoopback() {
-		ln.Close()
-		db.Close()
-		return usagef("--addr %s resolved to %s, which isn't loopback; give --token-file", addr, tcp.IP)
+		if writeToken == "" && readToken == "" {
+			ln.Close()
+			db.Close()
+			return usagef("--addr %s resolved to %s, which isn't loopback; give --token-file", addr, tcp.IP)
+		}
+		if tlsConfig == nil {
+			fmt.Fprintf(stderr, "xkv: warning: %s resolved to %s; serving without TLS, so tokens and values cross the network in clear (use --tls-cert and --tls-key)\n", addr, tcp.IP)
+		}
 	}
 	scheme := "http"
 	if tlsConfig != nil {

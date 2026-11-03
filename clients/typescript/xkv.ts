@@ -270,35 +270,44 @@ export class Client {
    */
   async *watch(opts: { since?: number; prefix?: string; all?: boolean; signal?: AbortSignal; retryMs?: number; idleMs?: number } = {}): AsyncGenerator<Revision> {
     if (opts.all && opts.since !== undefined) throw new Error("all and since don't go together");
+    const signal = opts.signal;
     let last = opts.since;
-    if (last === undefined && !opts.all) {
-      // "New ones only" means after the revision current now, fixed here so
-      // a reconnect before the first revision misses nothing.
-      last = Number((await this.stats()).last_rev);
-    }
     for (;;) {
-      const params: Params = { prefix: opts.prefix };
-      const headers: Record<string, string> = { Accept: "application/x-ndjson" };
-      if (opts.all) {
-        // all keeps skipping what compaction removed; where it got to goes
-        // in Last-Event-ID, which the server takes together with all.
-        params.all = true;
-        if (last !== undefined) headers["Last-Event-ID"] = String(last);
-      } else {
-        params.since = last;
-      }
+      if (signal?.aborted) return;
       // One controller per connection: the caller's signal or an idle
       // connection (a half-open socket sends nothing) aborts it.
       const ctl = new AbortController();
       const onAbort = () => ctl.abort();
-      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) ctl.abort();
       let idle: ReturnType<typeof setTimeout> | undefined;
       const arm = () => {
         if (idle !== undefined) clearTimeout(idle);
         idle = setTimeout(() => ctl.abort(), opts.idleMs ?? watchIdleMs);
       };
+      const pause = () => {
+        if (idle !== undefined) clearTimeout(idle);
+        idle = undefined;
+      };
       try {
         arm();
+        if (last === undefined && !opts.all) {
+          // "New ones only" means after the revision current when watch
+          // starts, fixed before the first connection so a reconnect
+          // before the first revision misses nothing.
+          const st = await (await this.request("GET", "/v1/stats", undefined, undefined, {}, ctl.signal)).json();
+          last = Number(st.last_rev);
+        }
+        const params: Params = { prefix: opts.prefix };
+        const headers: Record<string, string> = { Accept: "application/x-ndjson" };
+        if (opts.all) {
+          // all keeps skipping what compaction removed; where it got to
+          // goes in Last-Event-ID, which the server takes together with all.
+          params.all = true;
+          if (last !== undefined) headers["Last-Event-ID"] = String(last);
+        } else {
+          params.since = last;
+        }
         const resp = await this.request("GET", "/v1/watch", params, undefined, headers, ctl.signal);
         if (!resp.body) throw new XkvError(0, "no response body");
         const reader = resp.body.getReader();
@@ -306,9 +315,9 @@ export class Client {
         let buf = "";
         try {
           for (;;) {
+            arm();
             const { done, value } = await reader.read();
             if (done) break;
-            arm();
             buf += decoder.decode(value, { stream: true });
             let nl: number;
             while ((nl = buf.indexOf("\n")) >= 0) {
@@ -318,6 +327,9 @@ export class Client {
               const msg = JSON.parse(line);
               if (typeof msg.error === "string") throw new XkvError(msg.error.includes("compact") ? 410 : 500, msg.error);
               last = msg.rev;
+              // The consumer may take its time with a revision; the idle
+              // clock only runs while waiting on the server.
+              pause();
               yield msg as Revision;
             }
           }
@@ -325,14 +337,23 @@ export class Client {
           reader.cancel().catch(() => {});
         }
       } catch (e) {
-        if (opts.signal?.aborted) return;
+        if (signal?.aborted) return;
         if (e instanceof XkvError && e.status !== 0) throw e;
       } finally {
-        if (idle !== undefined) clearTimeout(idle);
-        opts.signal?.removeEventListener("abort", onAbort);
+        pause();
+        signal?.removeEventListener("abort", onAbort);
       }
-      if (opts.signal?.aborted) return;
-      await new Promise((r) => setTimeout(r, opts.retryMs ?? 1000));
+      if (signal?.aborted) return;
+      // Wait before reconnecting; an abort ends the wait at once.
+      await new Promise<void>((res) => {
+        const t = setTimeout(done, opts.retryMs ?? 1000);
+        function done() {
+          clearTimeout(t);
+          signal?.removeEventListener("abort", done);
+          res();
+        }
+        signal?.addEventListener("abort", done, { once: true });
+      });
     }
   }
 }

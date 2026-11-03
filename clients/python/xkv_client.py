@@ -215,10 +215,6 @@ class Client:
         if all and since is not None:
             raise ValueError("all and since don't go together")
         last = since
-        if last is None and not all:
-            # "New ones only" means after the revision current now, fixed
-            # here so a reconnect before the first revision misses nothing.
-            last = self.stats()["last_rev"]
         while True:
             params = {"prefix": prefix}
             headers = {"Accept": "application/x-ndjson"}
@@ -228,9 +224,14 @@ class Client:
                 params["all"] = True
                 if last is not None:
                     headers["Last-Event-ID"] = str(last)
-            else:
-                params["since"] = last
             try:
+                if last is None and not all:
+                    # "New ones only" means after the revision current when
+                    # watch starts, fixed before the first connection so a
+                    # reconnect before the first revision misses nothing.
+                    last = self.stats()["last_rev"]
+                if not all:
+                    params["since"] = last
                 resp = self._request("GET", "/v1/watch", params, headers=headers, stream=True, timeout=120)
                 with resp:
                     for line in resp:

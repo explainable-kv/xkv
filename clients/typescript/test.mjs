@@ -87,6 +87,22 @@ test("keys with dot and empty segments stay as given", async () => {
   for (const bad of [".", ".."]) assert.throws(() => db.get(bad));
 });
 
+test("watch stops for an aborted signal", async () => {
+  const db = new Client(url, { token: read });
+  const ac = new AbortController();
+  ac.abort();
+  const got = [];
+  for await (const rev of db.watch({ since: 0, signal: ac.signal })) got.push(rev);
+  assert.deepEqual(got, []);
+  // An abort during the wait before a reconnect ends watch at once.
+  const ac2 = new AbortController();
+  const dead = new Client(`http://127.0.0.1:${await freePort()}`, { token: read });
+  const t0 = Date.now();
+  setTimeout(() => ac2.abort(), 100);
+  for await (const _ of dead.watch({ since: 0, signal: ac2.signal, retryMs: 10000 })) assert.fail("no revisions");
+  assert.ok(Date.now() - t0 < 2000);
+});
+
 test("errors", async () => {
   const db = new Client(url, { token: write });
   await assert.rejects(db.put("k", "v"), (e) => e instanceof XkvError && e.status === 400);
