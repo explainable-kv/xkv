@@ -61,9 +61,9 @@ Design decisions:
   revisions, stats, export, import and watch (a generator or async iterator
   over the JSON-lines stream, resuming from the last revision), raise one
   error type carrying the HTTP status and message, and take the token.
-  Tested in CI against a real `xkv serve`. Distributed from the repo and as
-  release assets; registry publishing needs YK's accounts and is not in this
-  phase.
+  Tested in CI against a real `xkv serve`. Distributed from the repo (pip
+  from git with a pyproject.toml; raw files at the release tag); registry
+  publishing needs YK's accounts and is not in this phase.
 - Phase C, PROV: `GET /v1/why/KEY?format=prov` (and on revs),
   `xkv why --prov`, and `(*WhyNode).PROV()` give the tree as W3C PROV-O in
   JSON-LD: each revision a prov:Entity, its transaction a prov:Activity with
@@ -77,11 +77,11 @@ Design decisions:
 
 Steps:
 1. [x] Phase 0: this plan.
-2. [ ] Upkeep.
-3. [ ] Phase A: tokens and TLS, with tests.
-4. [ ] Phase C: PROV export, with tests.
-5. [ ] Phase B: Python and TypeScript clients, CI job against a real server.
-6. [ ] Docs: http.md, prov.md, clients README, README.
+2. [x] Upkeep (939411d): go.mod and README to Go 1.26, README header version (raised again at release).
+3. [x] Phase A (939411d): cmd/xkv/auth.go, serve flags; auth_test.go (token file rules, loopback detection, 401/403 matrix, TLS 1.2+ with a self-signed certificate, TLS 1.1 refused, refusals, the warning).
+4. [x] Phase C (b7c6354): prov.go, why --prov, format=prov; prov_test.go (nodes, links, shared transactions, base64, depth limit, every reference resolves), scripts/check-prov.py with rdflib in a CI job.
+5. [x] Phase B (6ef4ef0): clients/python (pip-installable), clients/typescript (tsc 5.9.3, checked-in build), both tested against a real server with tokens; CI on Python 3.9/Node 20 and 3.13/Node 24.
+6. [x] Docs (6d594a9): http.md tokens and TLS, prov.md, client READMEs, README sections and limits.
 7. [ ] Independent review (at most two rounds), fixes, fresh test/results.
 8. [ ] 0.4.0 released by the workflow; assets at tag and latest; downloaded binary run.
 9. [ ] xkv.org post and pages; softdevstudio.com note; softdev-plan item 26 done.
