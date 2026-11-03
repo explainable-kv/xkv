@@ -24,6 +24,8 @@ Version 0.3.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
 - [Watching for changes](#watching-for-changes)
 - [The xkv command](#the-xkv-command)
 - [HTTP mode](#http-mode)
+- [Clients for Python and TypeScript](#clients-for-python-and-typescript)
+- [Explanations as W3C PROV](#explanations-as-w3c-prov)
 - [In the browser](#in-the-browser)
 - [What xkv promises, and what it doesn't](#what-xkv-promises-and-what-it-doesnt)
 - [How it was tested](#how-it-was-tested)
@@ -329,7 +331,8 @@ err := db.Watch(ctx, xkv.WatchOptions{Since: st.LastRev, Prefix: "config/"}, fun
 | `xkv upgrade FILE` | rewrite a 0.1 store as file format 2 |
 | `xkv new-id FILE --keep-through REV` | give a copied store file its own store id |
 | `xkv watch FILE [--since REV \| --all] [--prefix P] [--count N] [--json]` | print revisions as they are written (new ones only by default) |
-| `xkv serve FILE [--addr HOST:PORT]` | HTTP mode |
+| `xkv why FILE KEY --prov` | the tree of causes as W3C PROV-O JSON-LD |
+| `xkv serve FILE [--addr HOST:PORT] [--token-file F] [--read-token-file F] [--tls-cert F --tls-key F]` | HTTP mode |
 
 Most commands take `--json`. Writes need a reason unless `--relaxed` is
 given. The actor is `--actor`, else `$XKV_ACTOR`, else your user name. Read
@@ -339,8 +342,8 @@ a usage mistake and 1 for any other error.
 
 ## HTTP mode
 
-`xkv serve` makes the store usable from any language, with JSON over HTTP on
-localhost:
+`xkv serve` makes the store usable from any language, with JSON over HTTP.
+On its own it listens on localhost:
 
 ```sh
 curl -X PUT localhost:7070/v1/keys/config/db/timeout \
@@ -348,7 +351,49 @@ curl -X PUT localhost:7070/v1/keys/config/db/timeout \
 curl localhost:7070/v1/why/config/db/timeout
 ```
 
-[docs/http.md](docs/http.md) lists every endpoint.
+Since 0.4.0 other services on a network can use it too. Give it a token
+file, and every request has to carry `Authorization: Bearer TOKEN`; a second
+token file gives read-only access, for dashboards and watchers. Add a
+certificate for TLS:
+
+```sh
+head -c 32 /dev/urandom | base64 > token && chmod 600 token
+xkv serve settings.xkv --addr 0.0.0.0:7070 --token-file token \
+  --tls-cert cert.pem --tls-key key.pem
+```
+
+serve refuses an address other machines can reach unless a token is set,
+and warns when it serves one without TLS. [docs/http.md](docs/http.md)
+lists every endpoint and the rules for tokens.
+
+## Clients for Python and TypeScript
+
+[clients/python](clients/python) is one standard-library file for Python
+3.9 or later; [clients/typescript](clients/typescript) is one dependency-free
+file for Node 20+, Deno, Bun and browsers. Both cover every endpoint, take
+the token, and give `watch` as a generator that reconnects from the last
+revision it saw. An agent writing a setting with its reason:
+
+```python
+from xkv_client import Client
+db = Client("https://xkv.internal:7070", token=token, actor="pricing-agent")
+db.put("price/sku-1042", "18.90", reason="competitor dropped to 18.95",
+       causes=["signal:competitor/sku-1042"], ref="run-8812")
+```
+
+Both are tested in CI against a real `xkv serve`. They aren't on PyPI or npm
+yet; install the Python one from the repository with pip, or copy the file.
+
+## Explanations as W3C PROV
+
+`xkv why FILE KEY --prov`, `GET /v1/why/KEY?format=prov` and
+`(*WhyNode).PROV` give the tree of causes as [W3C PROV-O](https://www.w3.org/TR/prov-o/)
+in JSON-LD, the provenance vocabulary audit and lineage tools read. Each
+revision is an entity, each transaction an activity, each actor an agent;
+causes are what an activity used and what an entity was derived from; a
+key's previous value is what a revision revises. Names are URNs under the
+store id, so trees exported from one store merge into one graph.
+[docs/prov.md](docs/prov.md) has the mapping.
 
 ## In the browser
 
@@ -396,7 +441,8 @@ It doesn't:
   browser) nothing stops two writers, so don't start two.
 - **sync on its own or authenticate.** Exchange moves files you pass it;
   when and where they go is up to you. Import only files from stores you
-  run: a store can't check what a file claims about third stores. The HTTP mode is for localhost.
+  run: a store can't check what a file claims about third stores. HTTP mode checks a bearer token when you give it one, but has no users,
+  roles or per-key permissions: a write token can write any key.
 - **scale to huge data.** The index of every revision lives in memory,
   roughly 80 bytes per revision. Values belong in the store; big blobs
   don't.

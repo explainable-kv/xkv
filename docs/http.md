@@ -2,12 +2,47 @@
 
 `xkv serve FILE` opens the store for writing and serves it over HTTP with
 JSON bodies, so programs in any language can use it. It listens on
-`127.0.0.1:7070` unless `--addr` says otherwise. There is no authentication:
-keep it on localhost or behind something that checks who is calling.
+`127.0.0.1:7070` unless `--addr` says otherwise.
 
 ```sh
 xkv serve settings.xkv --addr 127.0.0.1:7070
 ```
+
+[clients/python](../clients/python) and [clients/typescript](../clients/typescript)
+wrap every endpoint below.
+
+## Tokens and TLS
+
+Since 0.4.0 serve can require a bearer token:
+
+| Flag | Does |
+|---|---|
+| `--token-file FILE` | every request needs `Authorization: Bearer TOKEN` with this token; it can do everything |
+| `--read-token-file FILE` | a second token that can only make GET (and HEAD) requests, watch included |
+| `--tls-cert FILE --tls-key FILE` | serve HTTPS, TLS 1.2 or later |
+
+A token file holds one line: the token, at least 32 printable ASCII
+characters with no spaces (a trailing newline is fine). On Unix the file
+must not be readable by group or others (`chmod 600`). Files are read once,
+when serve starts; restart it to change a token. The two tokens must
+differ. Tokens are compared in constant time and never printed or logged.
+
+Without a token serve answers anyone who can reach it, so it refuses an
+`--addr` other machines can reach (an empty host, `0.0.0.0`, `[::]` or any
+non-loopback address) unless a token is set. Over plain HTTP the token and
+every value cross the network in clear, so serve prints a warning when it
+listens beyond loopback without TLS. There are no users or per-key rights:
+the write token can write any key, and the actor recorded is whatever the
+client sends.
+
+| Status | When |
+|---|---|
+| 401 | no `Authorization: Bearer` header, or a token that matches neither; the answer carries `WWW-Authenticate: Bearer realm="xkv"` |
+| 403 | the read token on a PUT, DELETE or POST |
+
+A browser's `EventSource` can't send an `Authorization` header; read the
+watch stream with `fetch` (as the TypeScript client does), or put a proxy
+that adds the header in front.
 
 ## Endpoints
 
@@ -19,9 +54,9 @@ xkv serve settings.xkv --addr 127.0.0.1:7070
 | `PUT /v1/keys/KEY` | write a value |
 | `DELETE /v1/keys/KEY` | delete the key |
 | `GET /v1/history/KEY?limit=N` | the key's revisions, newest first |
-| `GET /v1/why/KEY?depth=N` | the tree of causes behind the current value |
+| `GET /v1/why/KEY?depth=N` | the tree of causes behind the current value; `format=prov` gives W3C PROV-O JSON-LD instead (see [prov.md](prov.md)) |
 | `GET /v1/revs/REV` | one revision by number |
-| `GET /v1/revs/REV/why?depth=N` | the tree behind one revision |
+| `GET /v1/revs/REV/why?depth=N` | the tree behind one revision; `format=prov` as above |
 | `GET /v1/stats` | counts, the file format and the store id |
 | `GET /v1/export?since=REV` | an exchange file of the changes above REV (see [exchange.md](exchange.md)); the `X-Xkv-Through` header gives the REV for next time |
 | `POST /v1/import` | import the exchange file in the body; `conflicts=newest\|ours\|theirs` picks the policy. Answers with the import report; a failure part-way answers 500 with `"partial":true` and the report of what was done |
@@ -104,7 +139,7 @@ Errors come back as `{"error": "..."}` with these statuses:
 | 410 | the revision was removed by compaction |
 | 413 | value or body too large (an import body may be up to 1 GiB) |
 | 503 | the store is closed (the server is shutting down) |
-| 409 | an export of a store still in file format 1 |
+| 409 | an export, or a PROV tree, of a store still in file format 1 (it has no store id) |
 | 500 | anything else, including a store refusing writes after a failed write (reopen it). An import that failed part-way answers 500 with `"partial": true` and the report of what went in; importing again carries on |
 
 ## Watching
