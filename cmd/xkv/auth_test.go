@@ -227,3 +227,35 @@ func TestServeRefusals(t *testing.T) {
 		t.Fatalf("no warning: %q", stderr.String())
 	}
 }
+
+func TestHTTPWhyPROV(t *testing.T) {
+	db, err := xkv.Open(filepath.Join(t.TempDir(), "s.xkv"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv := httptest.NewServer(newHandler(db))
+	defer srv.Close()
+	for _, body := range []string{`{"value":"a","reason":"first"}`, `{"value":"b","reason":"second","causes":[{"key":"k"}]}`} {
+		req, _ := http.NewRequest("PUT", srv.URL+"/v1/keys/k", strings.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("put: %v %v", err, resp)
+		}
+		resp.Body.Close()
+	}
+	for path, want := range map[string]int{"/v1/why/k?format=prov": 200, "/v1/revs/2/why?format=prov": 200, "/v1/why/k?format=xml": 400, "/v1/why/nope?format=prov": 404} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("%s: %d %s", path, resp.StatusCode, b)
+		}
+		if want == 200 && (resp.Header.Get("Content-Type") != "application/ld+json" || !bytes.Contains(b, []byte(`"prov:wasRevisionOf"`))) {
+			t.Fatalf("%s: %s %s", path, resp.Header.Get("Content-Type"), b)
+		}
+	}
+}

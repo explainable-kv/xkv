@@ -150,7 +150,7 @@ type writeBody struct {
 //	PUT    /v1/keys/KEY               write; body {"value", "reason", "causes", ...}
 //	DELETE /v1/keys/KEY               delete; body {"reason", "causes", ...}
 //	GET    /v1/history/KEY[?limit=N]  revisions, newest first
-//	GET    /v1/why/KEY[?depth=N]      the tree of causes
+//	GET    /v1/why/KEY[?depth=N][&format=prov]  the tree of causes
 //	GET    /v1/revs/REV               one revision
 //	GET    /v1/revs/REV/why[?depth=N]
 //	GET    /v1/stats
@@ -263,7 +263,7 @@ func newHandler(db *xkv.DB) http.Handler {
 			return
 		}
 		n, err := db.Why(r.Context(), r.PathValue("key"), depth)
-		reply(w, n, err)
+		replyWhy(w, r, db, n, err)
 	})
 	mux.HandleFunc("GET /v1/revs/{rev}", func(w http.ResponseWriter, r *http.Request) {
 		rev, err := strconv.ParseUint(r.PathValue("rev"), 10, 64)
@@ -285,7 +285,7 @@ func newHandler(db *xkv.DB) http.Handler {
 			return
 		}
 		n, err := db.WhyRev(r.Context(), rev, depth)
-		reply(w, n, err)
+		replyWhy(w, r, db, n, err)
 	})
 	mux.HandleFunc("GET /v1/stats", func(w http.ResponseWriter, r *http.Request) {
 		s, err := db.Stats()
@@ -369,6 +369,36 @@ func intParam(w http.ResponseWriter, r *http.Request, name string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// replyWhy answers a why request as xkv's own JSON or, with format=prov, as
+// W3C PROV-O in JSON-LD.
+func replyWhy(w http.ResponseWriter, r *http.Request, db *xkv.DB, n *xkv.WhyNode, err error) {
+	switch r.URL.Query().Get("format") {
+	case "", "json":
+		reply(w, n, err)
+		return
+	case "prov":
+	default:
+		fail(w, http.StatusBadRequest, "format takes json or prov")
+		return
+	}
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	id, ok := db.StoreID()
+	if !ok {
+		fail(w, http.StatusConflict, "this store is in file format 1 and has no store id for PROV names; upgrade it first")
+		return
+	}
+	b, err := n.PROV(id)
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/ld+json")
+	w.Write(b)
 }
 
 func reply(w http.ResponseWriter, v any, err error) {

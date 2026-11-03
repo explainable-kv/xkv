@@ -28,6 +28,21 @@ jobs:
         name: 32-bit
         run: GOARCH=386 go test -count=1 -short .
 
+  prov:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install rdflib==7.6.0
+      - run: go build -o xkv ./cmd/xkv
+      - name: Check PROV output with rdflib
+        run: python3 scripts/check-prov.py ./xkv
+
   windows:
     runs-on: windows-latest
     steps:

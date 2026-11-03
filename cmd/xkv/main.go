@@ -27,8 +27,8 @@ Usage:
   xkv del FILE KEY --reason TEXT [--cause KEY[@REV]]... [--actor NAME] [--ref REF]
   xkv get FILE KEY [--at REV] [--json]
   xkv log FILE KEY [--limit N] [--json]           a key's revisions, newest first
-  xkv why FILE KEY [--depth N] [--json]           the chain of causes behind a value
-  xkv why FILE --rev REV [--depth N] [--json]
+  xkv why FILE KEY [--depth N] [--json|--prov]    the chain of causes behind a value
+  xkv why FILE --rev REV [--depth N] [--json|--prov]   (--prov: W3C PROV-O as JSON-LD)
   xkv rev FILE REV [--json]                       one revision by number
   xkv keys FILE [PREFIX]                          keys that have a value
   xkv stats FILE [--json]

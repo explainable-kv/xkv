@@ -5,13 +5,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/explainable-kv/xkv"
 )
 
 func cmdWhy(args []string, stdout io.Writer) error {
-	p, err := parseArgs(args, flagSpec{"depth": false, "rev": false, "json": true})
+	p, err := parseArgs(args, flagSpec{"depth": false, "rev": false, "json": true, "prov": true})
 	if err != nil {
 		return usageError{err.Error()}
 	}
@@ -47,6 +48,21 @@ func cmdWhy(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+	}
+	if p.bools["prov"] {
+		if p.bools["json"] {
+			return usagef("--prov and --json don't go together")
+		}
+		id, ok := db.StoreID()
+		if !ok {
+			return fmt.Errorf("this store is in file format 1 and has no store id for PROV names; run xkv upgrade first")
+		}
+		b, err := n.PROV(id)
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(b)
+		return err
 	}
 	if p.bools["json"] {
 		return writeJSON(stdout, n)
