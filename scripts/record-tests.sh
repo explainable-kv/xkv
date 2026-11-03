@@ -45,5 +45,21 @@ cmd="go test -count=1 -v -run TestCrashSIGKILL ."
 cmd="go test -run ^$ -bench . -benchtime 2s -count 3 ."
 { header "Benchmarks, three runs each. BenchmarkPut and BenchmarkTx100 fsync every transaction" "$cmd"; $cmd 2>&1; } > "$out/bench.txt"
 
+# The clients and the PROV check need a built binary, Python 3 (with
+# rdflib for PROV) and Node 20 or later; skipped when those are missing.
+bin=$(mktemp -d)/xkv
+go build -o "$bin" ./cmd/xkv
+if command -v python3 >/dev/null && python3 -c 'import rdflib' 2>/dev/null; then
+	{ header "PROV output checked with rdflib" "python3 scripts/check-prov.py xkv"; python3 scripts/check-prov.py "$bin" 2>&1; } > "$out/prov.txt"
+fi
+if command -v python3 >/dev/null && command -v node >/dev/null; then
+	{
+		header "The Python and TypeScript clients against a real xkv serve" "python3 -m unittest -v test_xkv_client; node --test test.mjs"
+		echo "python: $(python3 --version 2>&1), node: $(node --version)"
+		(cd clients/python && XKV_BIN="$bin" python3 -m unittest -v test_xkv_client 2>&1)
+		(cd clients/typescript && XKV_BIN="$bin" node --test test.mjs 2>&1 | grep -vE '^ *(duration_ms|type|\.\.\.|---)' )
+	} > "$out/clients.txt"
+fi
+
 grep -hE '^(ok|FAIL|--- FAIL)' "$out"/*.txt || true
 echo "results written to $out/"

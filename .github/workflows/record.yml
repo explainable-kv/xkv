@@ -1,0 +1,36 @@
+name: record
+# Runs scripts/record-tests.sh on the Go version CI uses and commits
+# test/results, so the numbers on xkv.org come from a real run. Started by hand.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: record
+  cancel-in-progress: false
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.x"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - run: pip install rdflib==7.6.0
+      - run: sh scripts/record-tests.sh
+      - name: Commit test/results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A test/results
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          git commit -m "Record test results for ${GITHUB_SHA::7}"
+          git pull --rebase origin main
+          git push origin HEAD:main
