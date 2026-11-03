@@ -18,7 +18,7 @@ import (
 )
 
 // Version is the version of this package and of the xkv command.
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 // Errors returned by the store. Check them with errors.Is.
 var (

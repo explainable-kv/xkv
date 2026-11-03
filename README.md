@@ -12,7 +12,7 @@ command for the shell, a small HTTP mode for other languages, and a
 WebAssembly build that runs in a browser. Two stores can swap changes
 through exchange files, and the reasons and causes travel with the values.
 
-Version 0.3.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
+Version 0.4.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
 
 - [Why a store should remember why](#why-a-store-should-remember-why)
 - [Quick start](#quick-start)
