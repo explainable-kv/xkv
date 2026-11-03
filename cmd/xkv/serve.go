@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,7 +26,7 @@ import (
 )
 
 func cmdServe(args []string, stdout, stderr io.Writer) error {
-	p, err := parseArgs(args, flagSpec{"addr": false, "relaxed": true, "no-sync": true})
+	p, err := parseArgs(args, flagSpec{"addr": false, "relaxed": true, "no-sync": true, "token-file": false, "read-token-file": false, "tls-cert": false, "tls-key": false})
 	if err != nil {
 		return usageError{err.Error()}
 	}
@@ -36,6 +37,38 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 	if p.has("addr") {
 		addr = p.str("addr")
 	}
+	var writeToken, readToken string
+	if p.has("token-file") {
+		if writeToken, err = loadToken(p.str("token-file")); err != nil {
+			return err
+		}
+	}
+	if p.has("read-token-file") {
+		if readToken, err = loadToken(p.str("read-token-file")); err != nil {
+			return err
+		}
+		if readToken == writeToken {
+			return usagef("--read-token-file holds the same token as --token-file")
+		}
+	}
+	if p.has("tls-cert") != p.has("tls-key") {
+		return usagef("--tls-cert and --tls-key go together")
+	}
+	var tlsConfig *tls.Config
+	if p.has("tls-cert") {
+		cert, err := tls.LoadX509KeyPair(p.str("tls-cert"), p.str("tls-key"))
+		if err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
+	}
+	local := isLoopback(addr)
+	if !local && writeToken == "" && readToken == "" {
+		return usagef("--addr %s accepts connections from other machines; give --token-file (and --read-token-file for readers) so they have to authenticate", addr)
+	}
+	if !local && tlsConfig == nil {
+		fmt.Fprintf(stderr, "xkv: warning: serving %s without TLS; tokens and values cross the network in clear (use --tls-cert and --tls-key)\n", addr)
+	}
 	db, err := xkv.Open(p.pos[0], &xkv.Options{Relaxed: p.bools["relaxed"], NoSync: p.bools["no-sync"]})
 	if err != nil {
 		return err
@@ -45,17 +78,33 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 		db.Close()
 		return err
 	}
+	scheme := "http"
+	if tlsConfig != nil {
+		ln = tls.NewListener(ln, tlsConfig)
+		scheme = "https"
+	}
+	var handler http.Handler = newHandler(db)
+	if writeToken != "" || readToken != "" {
+		handler = requireToken(handler, writeToken, readToken)
+	}
 	// Streams (/v1/watch) run until their client leaves; shutting down
 	// cancels the context they run under, so they end at once.
 	base, cancelBase := context.WithCancel(context.Background())
 	defer cancelBase()
-	srv := &http.Server{Handler: newHandler(db), ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return base }}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return base }}
 	srv.RegisterOnShutdown(cancelBase)
-	fmt.Fprintf(stdout, "xkv %s serving %s on http://%s\n", xkv.Version, p.pos[0], ln.Addr())
+	auth := ""
+	if writeToken != "" || readToken != "" {
+		auth = " (bearer token required)"
+	}
+	fmt.Fprintf(stdout, "xkv %s serving %s on %s://%s%s\n", xkv.Version, p.pos[0], scheme, ln.Addr(), auth)
 
 	done := make(chan struct{})
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	serveSignals(sigs)
+	if serveListening != nil {
+		serveListening(ln.Addr().String())
+	}
 	go func() {
 		<-sigs
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -73,6 +122,13 @@ func cmdServe(args []string, stdout, stderr io.Writer) error {
 	}
 	return err
 }
+
+// serveSignals arranges for the signals that stop serve to reach c; tests
+// replace it to stop a server without signalling the test process.
+var serveSignals = func(c chan<- os.Signal) { signal.Notify(c, os.Interrupt, syscall.SIGTERM) }
+
+// serveListening, when set, is told the address serve listens on.
+var serveListening func(addr string)
 
 // maxImportBody caps an exchange file sent to /v1/import.
 const maxImportBody = 1 << 30

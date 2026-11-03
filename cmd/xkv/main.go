@@ -41,7 +41,8 @@ Usage:
   xkv new-id FILE --keep-through REV              a new store id, for a copy of a store file
   xkv watch FILE [--since REV | --all] [--prefix P] [--count N] [--json]
                                                   print revisions as they are written
-  xkv serve FILE [--addr 127.0.0.1:7070] [--relaxed]
+  xkv serve FILE [--addr 127.0.0.1:7070] [--relaxed] [--token-file F] [--read-token-file F]
+                [--tls-cert F --tls-key F]       serve over HTTP; a non-loopback --addr needs a token
   xkv version
 
 A cause is KEY@REV for one revision, or KEY alone for the key's current

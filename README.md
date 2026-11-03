@@ -12,7 +12,7 @@ command for the shell, a small HTTP mode for other languages, and a
 WebAssembly build that runs in a browser. Two stores can swap changes
 through exchange files, and the reasons and causes travel with the values.
 
-Version 0.2.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
+Version 0.3.0 · Apache License 2.0 · [xkv.org](https://xkv.org)
 
 - [Why a store should remember why](#why-a-store-should-remember-why)
 - [Quick start](#quick-start)
@@ -499,7 +499,7 @@ Benchmarks on the same machine: a write with its fsync takes
 
 ## Build it yourself
 
-You need Go 1.24 or later.
+You need Go 1.26 or later.
 
 ```sh
 git clone https://github.com/explainable-kv/xkv
