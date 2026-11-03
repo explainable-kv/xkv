@@ -19,8 +19,12 @@ reviews, a fresh recording, a site post and a softdevstudio.com note:
   `GET /v1/watch`), read-only handles following another process, and the
   demo's "Changes as they happen" panel.
 
-The plan the owner approved on Oct 19 2026 ("do both") is done. XKV 0.4
-(softdev-plan item 26) is in progress, below.
+- v0.4.0: bearer and read-only tokens and TLS for `xkv serve`, Python and
+  TypeScript clients (clients/), why trees as W3C PROV-O JSON-LD. See below.
+
+Nothing is in progress. The plan's remaining candidate, an on-disk index to
+lift the memory ceiling, is not approved; ask the owner first. Publishing the
+clients to PyPI and npm needs his registry accounts.
 
 ## Rules
 
@@ -35,7 +39,7 @@ The plan the owner approved on Oct 19 2026 ("do both") is done. XKV 0.4
   rebuild and copy `xkv.wasm` and the matching `wasm_exec.js` to the site's
   `static/demo/`.
 
-## XKV 0.4 (softdev-plan item 26, approved by YK 2026-11-03)
+## Done: XKV 0.4 (softdev-plan item 26, approved by YK 2026-11-03)
 
 What and why: HTTP mode has no authentication, so the docs say to keep it on
 localhost, which rules out the main multi-service use (other services writing
@@ -86,8 +90,9 @@ Steps:
    Review round 1: blocker, both clients let fetch or urllib resolve dot and empty key segments, so `put("tenantA/../tenantB/limit")` wrote `tenantB/limit` from TypeScript; both now percent-encode the whole key and refuse `.` and `..`, with tests on 6 odd keys. Should-fix, all fixed: watch could lose revisions on a reconnect before its first revision (start fixed from stats, all=1 kept with Last-Event-ID; a restart-mid-watch test); PROV gave a transaction one agent and `used` for causes it generated itself; `prov:label` is not PROV-O (now rdfs:label, and check-prov.py checks against rdflib's PROV namespace); previous values looked causeless (xkv:causesNotShown); the TypeScript watch had no read timeout (60 s idle). Nits fixed: token length timing (digest compare), localhost checked by where it listens, tabs after Bearer, pycache, a flaky teardown, error parsing, a private-CA note.
    Review round 2: every round 1 finding fixed (keys checked over 17 odd forms, watchloss, compacted all=1 resume). One should-fix from the idle-timer change: the TypeScript watch ignored an already-aborted signal and aborts during the retry wait; fixed with a test. Nits fixed: the starting stats call now retries, the idle timer pauses while the consumer holds a revision, localhost resolving elsewhere with a token warns instead of refusing. Left: watch errors classified by message text; `used` for depth-unexplored causes from the same transaction (rare).
 8. [x] 0.4.0 released by the workflow from 7f01703 (results recorded on b4ec3af, go1.27.3, by the record workflow). All five archives match SHA256SUMS at the tag and latest; no drafts. The downloaded Linux binary passed smoke.sh, check-prov.py, both client suites, and the HTTP case study (serve on 0.0.0.0 with both tokens and TLS, a Python agent writing, a read-token watcher, 401 and 403, the PROV export parsed by rdflib). Record in test/results/release-0.4.0.txt with the script beside it.
-9. [ ] xkv.org post and pages; softdevstudio.com note; softdev-plan item 26 done.
+9. [x] xkv.org post "XKV Opens Its HTTP Mode to Other Services and Exports Its Reasons as W3C PROV" with xkv-tokens-prov.png (rendered and inspected), Reference, Quick Start and Download pages (site 1e861b6, Cloudflare Pages succeeded; no local Hugo, front matter checked by script); softdevstudio.com note, listing and plan rows (a610c36); softdev-plan item 26 done with a log row (e3ca11a).
 
 ## Next
 
-XKV 0.4 is in progress (above).
+Nothing is planned. The owner decides the next step; the plan goes here
+only after he approves it.
