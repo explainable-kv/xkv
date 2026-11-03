@@ -1,0 +1,6 @@
+# PROV output checked with rdflib
+# recorded 2026-11-03 12:02 UTC with go1.27.3 linux/amd64
+# Linux 7.0.0-1017-azure, AMD EPYC 7763 64-Core Processor, 4 CPUs
+# command: python3 scripts/check-prov.py xkv
+
+PROV check passed: 48 triples, 12 expected triples present, only PROV-O terms used

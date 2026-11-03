@@ -1,10 +1,10 @@
 # 1000 SIGKILLs of a writing process (XKV_CRASH_RUNS=1000)
-# recorded 2026-10-19 12:55 UTC with go1.24.7 linux/amd64
-# Linux 6.18.44-fc-v139, Intel(R) Xeon(R) Processor, 2 CPUs
+# recorded 2026-11-03 11:48 UTC with go1.27.3 linux/amd64
+# Linux 7.0.0-1017-azure, AMD EPYC 7763 64-Core Processor, 4 CPUs
 # command: XKV_CRASH_RUNS=1000 go test -count=1 -v -run TestCrashSIGKILL .
 
 === RUN   TestCrashSIGKILL
-    process_test.go:233: 1000 SIGKILLs at random moments in 6m0.136s: 44372 transactions acknowledged, 0 lost, 0 half-visible; 560 more were on disk but killed before the writer could report them; 0 kills left a torn tail (0 bytes); the file ends with 134394 revisions in 44932 transactions and every cause resolves
---- PASS: TestCrashSIGKILL (360.16s)
+    process_test.go:233: 1000 SIGKILLs at random moments in 7m19.66s: 39575 transactions acknowledged, 0 lost, 0 half-visible; 518 more were on disk but killed before the writer could report them; 7 kills left a torn tail (2361 bytes); the file ends with 119647 revisions in 40093 transactions and every cause resolves
+--- PASS: TestCrashSIGKILL (439.67s)
 PASS
-ok  	github.com/explainable-kv/xkv	360.164s
+ok  	github.com/explainable-kv/xkv	439.672s

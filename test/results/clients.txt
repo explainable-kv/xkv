@@ -1,0 +1,33 @@
+# The Python and TypeScript clients against a real xkv serve
+# recorded 2026-11-03 12:02 UTC with go1.27.3 linux/amd64
+# Linux 7.0.0-1017-azure, AMD EPYC 7763 64-Core Processor, 4 CPUs
+# command: python3 -m unittest -v test_xkv_client; node --test test.mjs
+
+python: Python 3.13.17, node: v24.22.1
+test_bytes_and_keys_that_need_escaping (test_xkv_client.ClientTest.test_bytes_and_keys_that_need_escaping) ... ok
+test_errors (test_xkv_client.ClientTest.test_errors) ... ok
+test_export_import (test_xkv_client.ClientTest.test_export_import) ... ok
+test_keys_with_dot_and_empty_segments (test_xkv_client.ClientTest.test_keys_with_dot_and_empty_segments) ... ok
+test_watch (test_xkv_client.ClientTest.test_watch) ... ok
+test_watch_reconnect_before_first_revision (test_xkv_client.ClientTest.test_watch_reconnect_before_first_revision) ... ok
+test_write_read_why (test_xkv_client.ClientTest.test_write_read_why) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 1.072s
+
+OK
+✔ write, read and explain (98.263226ms)
+✔ bytes and keys that need escaping (4.058884ms)
+✔ keys with dot and empty segments stay as given (18.181964ms)
+✔ watch stops for an aborted signal (103.817966ms)
+✔ errors (6.287961ms)
+✔ export and import (4.118563ms)
+✔ watch (208.834068ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 525.786106
