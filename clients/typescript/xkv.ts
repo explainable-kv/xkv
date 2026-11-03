@@ -1,0 +1,306 @@
+// Copyright xkv.org 2026
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * A client for xkv's HTTP mode (`xkv serve`), with no dependencies: it uses
+ * the platform's fetch, so it runs in Node 20+, Deno, Bun and browsers.
+ *
+ *     import { Client } from "./xkv.js";
+ *     const db = new Client("http://127.0.0.1:7070", { token, actor: "agent-7" });
+ *     await db.put("config/db/timeout", "30s", {
+ *       reason: "stop requests timing out", causes: ["alert:orders-db-latency"] });
+ *
+ * Methods return the server's JSON (see docs/http.md) and throw XkvError on
+ * an error answer.
+ */
+
+export const version = "0.4.0";
+
+/** A cause: a key (its current revision), or a key and a revision. */
+export type Cause = string | { key: string; rev?: number };
+
+export interface CauseRef {
+  key: string;
+  rev: number;
+}
+
+export interface Revision {
+  rev: number;
+  tx: number;
+  key: string;
+  value?: string;
+  encoding?: "base64";
+  deleted?: boolean;
+  actor: string;
+  reason: string;
+  ref?: string;
+  causes?: CauseRef[];
+  time: string;
+  origin?: string;
+  history?: boolean;
+}
+
+export interface WhyTree {
+  revision: Revision;
+  prev?: Revision;
+  causes?: WhyTree[];
+  prev_compacted?: boolean;
+  truncated?: boolean;
+  repeat?: boolean;
+}
+
+/** W3C PROV-O as JSON-LD; see docs/prov.md. */
+export interface ProvDocument {
+  "@context": Record<string, string>;
+  "@graph": Array<Record<string, unknown>>;
+}
+
+export interface WriteOptions {
+  reason?: string;
+  causes?: Cause[];
+  actor?: string;
+  ref?: string;
+}
+
+export interface ClientOptions {
+  /** The bearer token, if serve was started with --token-file or --read-token-file. */
+  token?: string;
+  /** The default actor for writes, sent as X-Xkv-Actor. */
+  actor?: string;
+  /** Another fetch, for tests or custom agents. */
+  fetch?: typeof fetch;
+}
+
+/** An error answer: status is the HTTP status (0 when the server could not be reached). */
+export class XkvError extends Error {
+  readonly status: number;
+  readonly partial?: unknown;
+  constructor(status: number, message: string, partial?: unknown) {
+    super(status ? `xkv: ${status}: ${message}` : `xkv: ${message}`);
+    this.name = "XkvError";
+    this.status = status;
+    this.partial = partial;
+  }
+}
+
+/** The value of a revision as bytes, decoding base64 when sent that way; undefined for a delete. */
+export function valueBytes(r: Revision): Uint8Array | undefined {
+  if (r.deleted) return undefined;
+  const v = r.value ?? "";
+  if (r.encoding === "base64") {
+    const bin = atob(v);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  return new TextEncoder().encode(v);
+}
+
+function toBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
+}
+
+function keyPath(key: string): string {
+  if (!key) throw new Error("empty key");
+  return key.split("/").map(encodeURIComponent).join("/");
+}
+
+type Params = Record<string, string | number | boolean | undefined>;
+
+export class Client {
+  readonly baseURL: string;
+  private readonly token?: string;
+  private readonly actor?: string;
+  private readonly fetchFn: typeof fetch;
+
+  constructor(baseURL = "http://127.0.0.1:7070", opts: ClientOptions = {}) {
+    this.baseURL = baseURL.replace(/\/+$/, "");
+    this.token = opts.token;
+    this.actor = opts.actor;
+    this.fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  private url(path: string, params?: Params): string {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params ?? {})) {
+      if (v === undefined || v === false) continue;
+      q.set(k, v === true ? "1" : String(v));
+    }
+    const s = q.toString();
+    return this.baseURL + path + (s ? "?" + s : "");
+  }
+
+  private async request(method: string, path: string, params?: Params, body?: BodyInit | object, extra: Record<string, string> = {}, signal?: AbortSignal): Promise<Response> {
+    const headers: Record<string, string> = { Accept: "application/json", ...extra };
+    if (this.token) headers.Authorization = "Bearer " + this.token;
+    if (this.actor) headers["X-Xkv-Actor"] = this.actor;
+    let payload: BodyInit | undefined;
+    if (body instanceof Uint8Array) {
+      payload = body as BodyInit;
+    } else if (body !== undefined && typeof body === "object") {
+      payload = JSON.stringify(body);
+      headers["Content-Type"] = "application/json";
+    } else {
+      payload = body as BodyInit | undefined;
+    }
+    let resp: Response;
+    try {
+      resp = await this.fetchFn(this.url(path, params), { method, headers, body: payload, signal });
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      throw new XkvError(0, e instanceof Error ? e.message : String(e));
+    }
+    if (!resp.ok) {
+      const text = await resp.text();
+      let msg = text.trim() || resp.statusText;
+      let partial: unknown;
+      try {
+        const j = JSON.parse(text);
+        if (typeof j.error === "string") msg = j.error;
+        if (j.partial) partial = j;
+      } catch {
+        // not JSON
+      }
+      throw new XkvError(resp.status, msg, partial);
+    }
+    return resp;
+  }
+
+  private async json<T>(method: string, path: string, params?: Params, body?: object): Promise<T> {
+    return (await (await this.request(method, path, params, body)).json()) as T;
+  }
+
+  private static writeBody(value: string | Uint8Array | undefined, o: WriteOptions): object {
+    const b: Record<string, unknown> = {};
+    if (typeof value === "string") b.value = value;
+    else if (value instanceof Uint8Array) {
+      b.value = toBase64(value);
+      b.encoding = "base64";
+    }
+    if (o.reason !== undefined) b.reason = o.reason;
+    if (o.actor !== undefined) b.actor = o.actor;
+    if (o.ref !== undefined) b.ref = o.ref;
+    if (o.causes?.length) b.causes = o.causes.map((c) => (typeof c === "string" ? { key: c } : c));
+    return b;
+  }
+
+  /** Write a value (a string, or bytes sent as base64) and return its revision. */
+  put(key: string, value: string | Uint8Array, opts: WriteOptions = {}): Promise<Revision> {
+    return this.json("PUT", "/v1/keys/" + keyPath(key), undefined, Client.writeBody(value, opts));
+  }
+
+  /** Delete a key and return the delete's revision. */
+  delete(key: string, opts: WriteOptions = {}): Promise<Revision> {
+    return this.json("DELETE", "/v1/keys/" + keyPath(key), undefined, Client.writeBody(undefined, opts));
+  }
+
+  /** The key's current revision, or its revision as the store stood at revision `at`. */
+  get(key: string, at?: number): Promise<Revision> {
+    return this.json("GET", "/v1/keys/" + keyPath(key), { at });
+  }
+
+  /** Keys that have a value, sorted. */
+  async keys(prefix?: string): Promise<string[]> {
+    return (await this.json<{ keys: string[] }>("GET", "/v1/keys", { prefix })).keys;
+  }
+
+  /** The key's revisions, newest first. */
+  history(key: string, limit?: number): Promise<Revision[]> {
+    return this.json("GET", "/v1/history/" + keyPath(key), { limit });
+  }
+
+  /** The tree of causes behind the key's value. */
+  why(key: string, depth?: number): Promise<WhyTree> {
+    return this.json("GET", "/v1/why/" + keyPath(key), { depth });
+  }
+
+  /** The same tree as W3C PROV-O in JSON-LD. */
+  whyProv(key: string, depth?: number): Promise<ProvDocument> {
+    return this.json("GET", "/v1/why/" + keyPath(key), { depth, format: "prov" });
+  }
+
+  /** why for one revision. */
+  whyRev(rev: number, depth?: number): Promise<WhyTree> {
+    return this.json("GET", `/v1/revs/${rev}/why`, { depth });
+  }
+
+  /** whyProv for one revision. */
+  whyRevProv(rev: number, depth?: number): Promise<ProvDocument> {
+    return this.json("GET", `/v1/revs/${rev}/why`, { depth, format: "prov" });
+  }
+
+  /** One revision by number. */
+  revision(rev: number): Promise<Revision> {
+    return this.json("GET", `/v1/revs/${rev}`);
+  }
+
+  /** Counts, the file format and the store id. */
+  stats(): Promise<Record<string, number | string>> {
+    return this.json("GET", "/v1/stats");
+  }
+
+  /** An exchange file of the changes above `since`, and the `since` to pass next time. */
+  async export(since?: number): Promise<{ data: Uint8Array; through?: number }> {
+    const resp = await this.request("GET", "/v1/export", { since });
+    const t = resp.headers.get("X-Xkv-Through");
+    return { data: new Uint8Array(await resp.arrayBuffer()), through: t ? Number(t) : undefined };
+  }
+
+  /** Import an exchange file; conflicts is newest, ours or theirs. Returns the import report. */
+  async importExchange(data: Uint8Array, conflicts?: "newest" | "ours" | "theirs"): Promise<Record<string, unknown>> {
+    const resp = await this.request("POST", "/v1/import", { conflicts }, data, { "Content-Type": "application/octet-stream" });
+    return (await resp.json()) as Record<string, unknown>;
+  }
+
+  /**
+   * Revisions as they commit, in revision order. `since` starts after that
+   * revision (default: new ones only); `all` starts from the beginning. A
+   * dropped connection is reopened from the last revision yielded, so
+   * nothing is lost or repeated. Stop with `break` or `signal`. Revisions
+   * removed by compaction before they could be sent end it with XkvError.
+   */
+  async *watch(opts: { since?: number; prefix?: string; all?: boolean; signal?: AbortSignal; retryMs?: number } = {}): AsyncGenerator<Revision> {
+    if (opts.all && opts.since !== undefined) throw new Error("all and since don't go together");
+    let last = opts.since;
+    let first = true;
+    for (;;) {
+      const params: Params = { prefix: opts.prefix };
+      if (first && opts.all) params.all = true;
+      else if (last !== undefined) params.since = last;
+      first = false;
+      try {
+        const resp = await this.request("GET", "/v1/watch", params, undefined, { Accept: "application/x-ndjson" }, opts.signal);
+        if (!resp.body) throw new XkvError(0, "no response body");
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buf.indexOf("\n")) >= 0) {
+              const line = buf.slice(0, nl).trim();
+              buf = buf.slice(nl + 1);
+              if (!line) continue; // keep-alive
+              const msg = JSON.parse(line);
+              if (typeof msg.error === "string") throw new XkvError(410, msg.error);
+              last = msg.rev;
+              yield msg as Revision;
+            }
+          }
+        } finally {
+          reader.cancel().catch(() => {});
+        }
+      } catch (e) {
+        if (opts.signal?.aborted) return;
+        if (e instanceof XkvError && e.status !== 0) throw e;
+      }
+      if (opts.signal?.aborted) return;
+      await new Promise((r) => setTimeout(r, opts.retryMs ?? 1000));
+    }
+  }
+}

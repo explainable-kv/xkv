@@ -1,0 +1,15 @@
+{
+  "name": "xkv-client",
+  "version": "0.4.0",
+  "description": "Client for xkv's HTTP mode: a key-value store that remembers why",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "xkv.js",
+  "types": "xkv.d.ts",
+  "files": ["xkv.js", "xkv.d.ts", "xkv.ts"],
+  "repository": {"type": "git", "url": "https://github.com/explainable-kv/xkv", "directory": "clients/typescript"},
+  "homepage": "https://xkv.org",
+  "engines": {"node": ">=20"},
+  "scripts": {"build": "tsc -p tsconfig.json", "test": "node --test test.mjs"},
+  "devDependencies": {"typescript": "5.9.3"}
+}

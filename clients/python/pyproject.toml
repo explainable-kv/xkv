@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xkv-client"
+version = "0.4.0"
+description = "Client for xkv's HTTP mode: a key-value store that remembers why"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+readme = "README.md"
+
+[project.urls]
+Homepage = "https://xkv.org"
+Source = "https://github.com/explainable-kv/xkv"
+
+[tool.setuptools]
+py-modules = ["xkv_client"]
