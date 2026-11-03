@@ -1,0 +1,40 @@
+# xkv 0.4.0 release check and HTTP case study
+# recorded 2026-11-03 12:12 UTC with the downloaded xkv_linux_amd64.tar.gz from releases/download/v0.4.0
+
+## SHA256SUMS at the tag and at latest
+xkv_darwin_amd64.tar.gz: OK
+xkv_darwin_arm64.tar.gz: OK
+xkv_linux_amd64.tar.gz: OK
+xkv_linux_arm64.tar.gz: OK
+xkv_windows_amd64.zip: OK
+xkv_darwin_amd64.tar.gz: OK
+xkv_darwin_arm64.tar.gz: OK
+xkv_linux_amd64.tar.gz: OK
+xkv_linux_arm64.tar.gz: OK
+xkv_windows_amd64.zip: OK
+
+## Downloaded binary
+xkv 0.4.0 (file format 2)
+ok: every revision reads back whole and every cause resolves
+smoke test passed
+PROV check passed: 48 triples, 12 expected triples present, only PROV-O terms used
+
+## Case study: serve on 0.0.0.0:7443 with a write token, a read token and TLS (self-signed P-256 certificate); scripted with clients/python
+$ xkv serve prices.xkv --addr 0.0.0.0:7443
+xkv serve: --addr 0.0.0.0:7443 accepts connections from other machines; give --token-file (and --read-token-file for readers) so they have to authenticate
+xkv 0.4.0 serving prices.xkv on https://0.0.0.0:7443 (bearer token required)
+watcher (read token) saw:
+  2 price/sku-1042=18.90 by pricing-agent: match the competitor minus 5 cents
+  4 price/sku-1042=19.40 by pricing-agent: floor from the margin policy
+read token write: 403 this token can only read
+no token: 401 a bearer token is required
+PROV nodes: prov:Activity, prov:Agent, prov:Entity 11
+
+## The PROV export parsed with rdflib 7.6.0
+rdflib: 68 triples
+   policy:margin-floor@3 | finance@shop | finance set a 19.40 floor
+   price/sku-1042@2 | pricing-agent | match the competitor minus 5 cents
+   price/sku-1042@4 | pricing-agent | floor from the margin policy
+   signal:competitor/sku-1042@1 | price-scraper | scraped competitor price
+   rev 4 derived from rev 1
+   rev 4 derived from rev 3
