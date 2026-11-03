@@ -76,7 +76,15 @@ jobs:
           git diff --exit-code -- xkv.js xkv.d.ts
       - name: TypeScript client against a real server
         working-directory: clients/typescript
-        run: XKV_BIN=$GITHUB_WORKSPACE/xkv node --test test.mjs
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! XKV_BIN=$GITHUB_WORKSPACE/xkv node --test test.mjs 2>&1 | tee test-output.txt; then
+            # Put the failing lines in an annotation, readable without the log.
+            msg=$(grep -E -A25 '^not ok|^ *not ok|Error|error:' test-output.txt | head -80 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=typescript client test failures::$msg"
+            exit 1
+          fi
 
   windows:
     runs-on: windows-latest
